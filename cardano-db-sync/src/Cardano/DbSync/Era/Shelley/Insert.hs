@@ -48,12 +48,13 @@ import           Control.Monad.Trans.Except.Extra (firstExceptT, newExceptT)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as LBS
+import           Data.List.Split.Internals (chunksOf)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Encoding.Error as Text
 
-import           Database.Persist.Sql (SqlBackend)
+import           Database.Persist.Sql (SqlBackend, putMany)
 
 import           Ouroboros.Consensus.Cardano.Block (StandardCrypto)
 
@@ -121,13 +122,23 @@ insertShelleyBlock tracer env blk lStateSnap details = do
         ]
 
     whenJust (lssEpochUpdate lStateSnap) $ \ esum -> do
-      whenJust (Generic.euRewards esum) $ \ rewards -> do
+      let stakes = Generic.euStakeDistribution esum
+      whenJust (Generic.euRewards esum) $ \ grewards -> do
+        let rewards = Generic.rewards grewards
+        liftIO $ logInfo tracer $ mconcat
+          [ "Reached epoch boundary for "
+          , textShow (sdEpochNo details)
+          , ". Inserting "
+          , textShow (length rewards)
+          , " rewards and "
+          , textShow $ length $ Generic.unStakeDist stakes
+          , " stakes. This may take a while."]
         -- Subtract 2 from the epoch to calculate when the epoch in which the reward was earned.
-        insertRewards tracer blkId (sdEpochNo details - 2) (Generic.rewards rewards)
-        insertOrphanedRewards tracer blkId (sdEpochNo details - 2) (Generic.orphaned rewards)
+        insertRewards tracer blkId (sdEpochNo details - 2) rewards
+        insertOrphanedRewards tracer blkId (sdEpochNo details - 2) (Generic.orphaned grewards)
 
       insertEpochParam tracer blkId (sdEpochNo details) (Generic.euProtoParams esum) (Generic.euNonce esum)
-      insertEpochStake tracer blkId (sdEpochNo details) (Generic.euStakeDistribution esum)
+      insertEpochStake tracer blkId (sdEpochNo details) stakes
 
     when (getSyncStatus details == SyncFollowing) $
       -- Serializiing things during syncing can drastically slow down full sync
@@ -613,18 +624,20 @@ insertRewards
     :: (MonadBaseControl IO m, MonadIO m)
     => Trace IO Text -> DB.BlockId -> EpochNo -> Map Generic.StakeCred Coin
     -> ExceptT DbSyncNodeError (ReaderT SqlBackend m) ()
-insertRewards _tracer blkId epoch rewards =
-    mapM_ insertOneReward $ Map.toList rewards
+insertRewards _tracer blkId epoch rewards = do
+    forM_ (chunksOf 10000 $ Map.toList rewards) $ \rewardsChunk -> do
+      dbRewards <- mapM mkReward rewardsChunk
+      lift $ putMany dbRewards
   where
-    insertOneReward
+    mkReward
         :: (MonadBaseControl IO m, MonadIO m)
         => (Generic.StakeCred, Shelley.Coin)
-        -> ExceptT DbSyncNodeError (ReaderT SqlBackend m) ()
-    insertOneReward (saddr, coin) = do
+        -> ExceptT DbSyncNodeError (ReaderT SqlBackend m) DB.Reward
+    mkReward (saddr, coin) = do
       (saId, poolId) <- firstExceptT (NELookup "insertReward")
                           . newExceptT
                           $ queryStakeAddressAndPool (unEpochNo epoch) (Generic.unStakeCred saddr)
-      void . lift . DB.insertReward $
+      return $
         DB.Reward
           { DB.rewardAddrId = saId
           , DB.rewardAmount = Generic.coinToDbLovelace coin
@@ -692,17 +705,19 @@ insertEpochStake
     => Trace IO Text -> DB.BlockId -> EpochNo -> Generic.StakeDist
     -> ExceptT DbSyncNodeError (ReaderT SqlBackend m) ()
 insertEpochStake _tracer blkId (EpochNo epoch) smap =
-    mapM_ insert $ Map.toList (Generic.unStakeDist smap)
+    forM_ (chunksOf 10000 $ Map.toList (Generic.unStakeDist smap)) $ \stakeChunk -> do
+      dbStakes <- mapM mkStake stakeChunk
+      lift $ putMany dbStakes
   where
-    insert
+    mkStake
         :: (MonadBaseControl IO m, MonadIO m)
         => (Generic.StakeCred, Shelley.Coin)
-        -> ExceptT DbSyncNodeError (ReaderT SqlBackend m) ()
-    insert (saddr, coin) = do
+        -> ExceptT DbSyncNodeError (ReaderT SqlBackend m) DB.EpochStake
+    mkStake (saddr, coin) = do
       (saId, poolId) <- firstExceptT (NELookup "insertEpochStake")
                           . newExceptT
                           $ queryStakeAddressAndPool epoch (Generic.unStakeCred saddr)
-      void . lift . DB.insertEpochStake $
+      return $
         DB.EpochStake
           { DB.epochStakeAddrId = saId
           , DB.epochStakePoolId = poolId
