@@ -1,0 +1,125 @@
+cabal-version:          >= 1.10
+
+-- http://haskell.org/cabal/users-guide/
+
+name:                   cardano-db-gen
+version:                8.0.0
+synopsis:               A fake chain generator for testing cardano DB sync.
+description:            A fake chain generator for testing cardano DB sync.
+homepage:               https://github.com/input-output-hk/cardano-db-sync
+bug-reports:            https://github.com/input-output-hk/cardano-db-sync/issues
+license:                Apache-2.0
+license-file:           LICENSE
+author:                 IOHK Engineering Team
+maintainer:             operations@iohk.io
+copyright:              (c) 2019 IOHK
+category:               Cryptocurrency
+build-type:             Simple
+extra-source-files:     CHANGELOG.md
+
+library
+  default-language:     Haskell2010
+  hs-source-dirs:       src
+
+  ghc-options:          -Wall
+                        -Wcompat
+                        -fwarn-redundant-constraints
+                        -fwarn-incomplete-patterns
+                        -fwarn-unused-imports
+                        -Wincomplete-record-updates
+                        -Wincomplete-uni-patterns
+
+  exposed-modules:      Cardano.Gen
+
+  other-modules:        Cardano.Gen.ChainSync
+                        Cardano.Gen.Server
+
+  build-depends:        base                            >= 4.12         && < 4.15
+                      , aeson
+                      , binary
+                      , base16-bytestring
+                      , bytestring
+                      , cardano-api
+                      , cardano-binary
+                      , cardano-client
+                      , cardano-crypto
+                      , cardano-crypto-class
+                      , cardano-crypto-praos
+                      , cardano-crypto-wrapper
+                      , cardano-db
+                      , cardano-db-sync
+                      , cardano-ledger
+                      , cardano-ledger-shelley-ma
+                      -- Only for some orphan tracing instances.
+                      , cardano-node
+                      , cardano-prelude
+                      , cardano-slotting
+                      , cborg
+                      , containers
+                      , contra-tracer
+                      , cryptonite
+                      , directory
+                      , esqueleto
+                      , extra
+                      , filepath
+                      , formatting
+                      , io-sim-classes
+                      , iohk-monitoring
+                      , lifted-base
+                      , monad-control
+                      , memory
+                      , monad-logger
+                      , network-mux
+                      , optparse-applicative
+                      , pretty-show
+                      , network
+                      , ouroboros-consensus
+                      , ouroboros-consensus-byron
+                      , ouroboros-consensus-cardano
+                      , ouroboros-consensus-shelley
+                      , ouroboros-network
+                      , ouroboros-network-framework
+                      , persistent
+                      , prometheus
+                      , small-steps
+                      , serialise
+                      , shelley-spec-ledger
+                      , split
+                      , stm
+                      , text
+                      , time
+                      , transformers
+                      , transformers-except
+                      , typed-protocols
+                      , unix
+                      , vector
+                      , yaml
+
+executable cardano-db-gen
+  default-language:     Haskell2010
+  main-is:              cardano-db-gen.hs
+  hs-source-dirs:       app
+
+  ghc-options:          -Wall
+                        -Wcompat
+                        -fwarn-redundant-constraints
+                        -fwarn-incomplete-patterns
+                        -fwarn-unused-imports
+                        -Wincomplete-record-updates
+                        -Wincomplete-uni-patterns
+                        -Wno-unsafe
+                        -threaded
+
+
+  other-modules:        Paths_cardano_db_gen
+
+  build-depends:        base                            >= 4.12         && < 4.15
+                      , bytestring
+                      , cardano-config
+                      , cardano-db
+                      , cardano-db-sync
+                      , cardano-prelude
+                      , cardano-slotting
+                      , optparse-applicative
+                      , ouroboros-network
+                      , text
