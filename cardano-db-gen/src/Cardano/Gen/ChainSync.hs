@@ -7,6 +7,7 @@
 
 module Cardano.Gen.ChainSync
   ( chainSyncServer
+  , ChainProducerState (..)
   ) where
 
 import           Control.Exception (assert)

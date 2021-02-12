@@ -1,31 +1,40 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 
 module Cardano.Gen.Server
   ( runLocalServer
-  , runLocalServerWithManager
   ) where
 
+import           Control.Concurrent (threadDelay)
 import           Control.Exception (bracket)
-import           Control.Monad (void)
+import           Control.Monad (forever, void)
+import           Control.Monad.Class.MonadSTM.Strict
 
-import           Control.Tracer (traceWith)
+import           Control.Tracer (traceWith, nullTracer)
 
 import           Data.ByteString.Lazy.Char8 (ByteString)
+import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Proxy (Proxy (..))
+import           Data.Void (Void)
 
 import qualified Network.Socket as Socket
+import           Network.TypedProtocol.Core (Peer (..))
 
+import           Ouroboros.Consensus.Network.NodeToClient (Apps (..), DefaultCodecs, Codecs' (..), Handlers (..))
 import qualified Ouroboros.Consensus.Network.NodeToClient as NTC
-import qualified Ouroboros.Consensus.Network.NodeToNode as NTN
 import           Ouroboros.Consensus.Node (ConnectionId, LowLevelRunNodeArgs (..), NodeKernel,
-                   RunNode, stdVersionDataNTC, stdVersionDataNTN)
+                   stdVersionDataNTC, stdVersionDataNTN)
 
 import           Ouroboros.Consensus.Block (CodecConfig (..))
-import           Ouroboros.Consensus.Config (TopLevelConfig, configCodec)
+import           Ouroboros.Consensus.Config (configCodec)
 import           Ouroboros.Consensus.Node.DbLock ()
 import           Ouroboros.Consensus.Node.DbMarker ()
 import           Ouroboros.Consensus.Node.ErrorPolicy (consensusErrorPolicy)
@@ -35,215 +44,147 @@ import           Ouroboros.Consensus.Node.NetworkProtocolVersion (BlockNodeToCli
                    supportedNodeToNodeVersions)
 import           Ouroboros.Consensus.Node.ProtocolInfo ()
 import           Ouroboros.Consensus.Node.Recovery ()
-import           Ouroboros.Consensus.Node.Run ()
+import           Ouroboros.Consensus.Node.Run (SerialiseNodeToClientConstraints)
 import           Ouroboros.Consensus.Node.Tracers ()
 import           Ouroboros.Consensus.NodeKernel (NodeKernelArgs, getPeersFromCurrentLedgerAfterSlot)
 import           Ouroboros.Consensus.Util.Args ()
+import           Ouroboros.Consensus.Ledger.Query (Query)
+import           Ouroboros.Consensus.Ledger.SupportsMempool (ApplyTxErr, GenTx)
 
 
+import           Ouroboros.Network.Channel (Channel)
 import           Ouroboros.Network.Codec (DeserialiseFailure)
 import           Ouroboros.Network.Diffusion (DiffusionApplications (..), DiffusionArguments (..),
                    DiffusionInitializationTracer (..), DiffusionTracers (..),
                    LedgerPeersConsensusInterface (..))
+import           Ouroboros.Network.Driver.Simple (runPeer)
 import           Ouroboros.Network.ErrorPolicy (ErrorPolicies)
 import           Ouroboros.Network.IOManager (IOManager, withIOManager)
+import           Ouroboros.Network.Mux (OuroborosApplication, MuxMode (..))
 import           Ouroboros.Network.Magic (NetworkMagic)
-import           Ouroboros.Network.NodeToClient (NodeToClientVersion, NodeToClientVersionData)
+import           Ouroboros.Network.NodeToClient (NodeToClientVersion, NodeToClientVersionData (..))
 import qualified Ouroboros.Network.NodeToClient as NodeToClient
-import           Ouroboros.Network.NodeToNode (MiniProtocolParameters (..), NodeToNodeVersionData,
-                   RemoteAddress)
+import           Ouroboros.Network.NodeToNode (MiniProtocolParameters (..), NodeToNodeVersionData (..),
+                   RemoteAddress, Versions)
 import qualified Ouroboros.Network.NodeToNode as NodeToNode
 import           Ouroboros.Network.Protocol.Handshake.Version (combineVersions,
                    simpleSingletonVersions)
 import           Ouroboros.Network.Snocket (LocalAddress, LocalSnocket, LocalSocket (..))
 import qualified Ouroboros.Network.Snocket as Snocket
 import           Ouroboros.Network.Socket (NetworkMutableState, NetworkServerTracers (..))
+import           Ouroboros.Network.Util.ShowProxy
+
+import           Ouroboros.Network.Protocol.ChainSync.Server
+import           Ouroboros.Network.Protocol.LocalStateQuery.Type
+import           Ouroboros.Network.Protocol.LocalStateQuery.Server
+import           Ouroboros.Network.Protocol.TxSubmission.Server
+
+import           Cardano.Gen.ChainSync
 
 runLocalServer
-    :: forall blk. RunNode blk
-    => DiffusionTracers -> DiffusionArguments -> NetworkMagic
-    -> NetworkMutableState LocalAddress -> TopLevelConfig blk
+    :: forall blk.
+       ( ShowQuery (Query blk)
+       , ShowProxy blk
+       , ShowProxy (ApplyTxErr blk)
+       , ShowProxy (GenTx blk)
+       , ShowProxy (Query blk)
+       , SerialiseNodeToClientConstraints blk
+       )
+    => NetworkMagic
+    -> FilePath
+    -> Map NodeToClientVersion (BlockNodeToClientVersion blk)
+    -> StrictTVar IO (ChainProducerState blk)
     -> IO ()
-runLocalServer tracers difArgs networkMagic networkLocalState topConfig =
+runLocalServer networkMagic localAddress nodeToClientVersions chainvar =
     withIOManager $ \ iom ->
-      runLocalServerWithManager iom tracers difArgs applications networkLocalState
-  where
-    -- Holy shit this thing is a endless rabbit hole of stupidity.
-    applications :: DiffusionApplications RemoteAddress LocalAddress NodeToNodeVersionData NodeToClientVersionData IO
-    applications =
-      mkDiffusionApplications
-        NodeToNode.defaultMiniProtocolParameters
-        two
-        three
+      void $ withSnocket iom localAddress $ \localSocket localSnocket -> do
+        networkState <- NodeToClient.newNetworkMutableState
+        NodeToClient.withServer
+          localSnocket
+          NodeToClient.nullNetworkServerTracers -- TODO: some tracing might be useful.
+          networkState
+          localSocket
+          versions
+          NodeToClient.networkErrorPolicies
 
-    mkDiffusionApplications
-      :: MiniProtocolParameters
-      -> ( BlockNodeToNodeVersion blk
-            -> NTN.Apps IO (ConnectionId addrNTN) ByteString ByteString ByteString ByteString ByteString ()
-            )
-      -> ( BlockNodeToClientVersion blk
-            -> NodeToClientVersion
-            -> NTC.Apps IO (ConnectionId addrNTC) ByteString ByteString ByteString ()
-            )
-      -> NodeKernel IO (ConnectionId addrNTN) (ConnectionId addrNTC) blk
-      -> DiffusionApplications
-           addrNTN addrNTC
-           NodeToNode.NodeToNodeVersionData NodeToClient.NodeToClientVersionData
-           IO
-    mkDiffusionApplications miniProtocolParams ntnApps ntcApps kernel =
-      DiffusionApplications
-        { daResponderApplication =
-            combineVersions
-              [ simpleSingletonVersions
-                    version
-                    (llrnVersionDataNTN llArgs)
-                    (NTN.responder miniProtocolParams version $ ntnApps blockVersion)
-              | (version, blockVersion) <- Map.toList (llrnNodeToNodeVersions llArgs)
-              ]
-        , daInitiatorApplication =
-            combineVersions
-              [ simpleSingletonVersions
-                    version
-                    (llrnVersionDataNTN llArgs)
-                    (NTN.initiator miniProtocolParams version $ ntnApps blockVersion)
-              | (version, blockVersion) <- Map.toList (llrnNodeToNodeVersions llArgs)
-              ]
-        , daLocalResponderApplication =
-            combineVersions
-              [ simpleSingletonVersions
-                    version
-                    (llrnVersionDataNTC llArgs)
-                    (NTC.responder version $ ntcApps blockVersion version)
-              | (version, blockVersion) <- Map.toList (llrnNodeToClientVersions llArgs)
-              ]
-        , daErrorPolicies = consensusErrorPolicy (Proxy @blk)
-        , daLedgerPeersCtx = LedgerPeersConsensusInterface (getPeersFromCurrentLedgerAfterSlot kernel)
-        }
+  where
+    versions :: Versions NodeToClientVersion
+                         NodeToClientVersionData
+                         (OuroborosApplication ResponderMode LocalAddress ByteString IO Void ())
+    versions = combineVersions
+            [ simpleSingletonVersions
+                  version
+                  (NodeToClientVersionData networkMagic)
+                  (NTC.responder version
+                    $ mkApps (NTC.defaultCodecs codecConfig blockVersion version))
+            | (version, blockVersion) <- Map.toList nodeToClientVersions
+            ]
 
     codecConfig :: CodecConfig blk
-    codecConfig = configCodec topConfig
+    codecConfig = configCodec undefined -- topConfig
 
-    mkNodeToNodeApps
-        :: NodeKernelArgs IO (ConnectionId addrNTN) (ConnectionId addrNTC) blk
-        -> NodeKernel     IO (ConnectionId addrNTN) (ConnectionId addrNTC) blk
-        -> BlockNodeToNodeVersion blk
-        -> NTN.Apps IO (ConnectionId addrNTN) ByteString ByteString ByteString ByteString ByteString ()
-    mkNodeToNodeApps nodeKernelArgs nodeKernel version =
-        NTN.mkApps
-          nodeKernel
-          rnTraceNTN
-          (NTN.defaultCodecs codecConfig version)
-          (llrnChainSyncTimeout llArgs)
-          (NTN.mkHandlers nodeKernelArgs nodeKernel)
+    mkApps :: DefaultCodecs blk IO
+           -> NTC.Apps IO (ConnectionId addrNTC) ByteString ByteString ByteString ()
+    mkApps Codecs {..}  = Apps {..}
+      where
+        aChainSyncServer
+          :: localPeer
+          -> Channel IO ByteString
+          -> IO ((), Maybe ByteString)
+        aChainSyncServer them channel =
+          runPeer
+            nullTracer -- TODO add a tracer!
+            cChainSyncCodec
+            channel
+            $ chainSyncServerPeer
+            $ chainSyncServer () chainvar
 
-    mkNodeToClientApps
-        :: NodeKernelArgs m (ConnectionId addrNTN) (ConnectionId addrNTC) blk
-        -> NodeKernel     m (ConnectionId addrNTN) (ConnectionId addrNTC) blk
-        -> BlockNodeToClientVersion blk
-        -> NodeToClientVersion
-        -> NTC.Apps m (ConnectionId addrNTC) ByteString ByteString ByteString ()
-    mkNodeToClientApps nodeKernelArgs nodeKernel blockVersion networkVersion =
-        NTC.mkApps
-          nodeKernel
-          rnTraceNTC
-          (NTC.defaultCodecs codecConfig blockVersion networkVersion)
-          (NTC.mkHandlers nodeKernelArgs nodeKernel)
+        aTxSubmissionServer
+          :: localPeer
+          -> Channel IO ByteString
+          -> IO ((), Maybe ByteString)
+        aTxSubmissionServer them channel =
+          runPeer
+            nullTracer
+            cTxSubmissionCodec
+            channel
+            (Effect (forever $ threadDelay 3_600_000_000))
 
-    rnTraceNTN :: NTN.Tracers m (ConnectionId addrNTN) blk DeserialiseFailure
-    rnTraceNTN = error "Cardano.Gen.Server.runLocalServer: rnTraceNTN"
-
-    rnTraceNTC :: NTC.Tracers m (ConnectionId addrNTC) blk DeserialiseFailure
-    rnTraceNTC = error "Cardano.Gen.Server.runLocalServer: rnTraceNTC"
-
-    llArgs :: LowLevelRunNodeArgs IO addrNTN addrNTC NodeToNode.NodeToNodeVersionData NodeToClient.NodeToClientVersionData blk
-    llArgs =
-      LowLevelRunNodeArgs
-        { llrnWithCheckedDB = error "Cardano.Gen.Server.runLocalServer: llrnWithCheckedDB"
-        , llrnChainDbArgsDefaults = error "Cardano.Gen.Server.runLocalServer: llrnChainDbArgsDefaults"
-        , llrnCustomiseChainDbArgs = error "Cardano.Gen.Server.runLocalServer: llrnCustomiseChainDbArgs"
-        , llrnCustomiseNodeKernelArgs = error "Cardano.Gen.Server.runLocalServer: llrnCustomiseNodeKernelArgs"
-        , llrnBfcSalt = error "Cardano.Gen.Server.runLocalServer: llrnBfcSalt"
-        , llrnKeepAliveRng = error "Cardano.Gen.Server.runLocalServer: llrnKeepAliveRng"
-        , llrnCustomiseHardForkBlockchainTimeArgs = error "Cardano.Gen.Server.runLocalServer: llrnCustomiseHardForkBlockchainTimeArgs"
-        , llrnChainSyncTimeout = error "Cardano.Gen.Server.runLocalServer: llrnChainSyncTimeout"
-        , llrnRunDataDiffusion = error "Cardano.Gen.Server.runLocalServer: llrnRunDataDiffusion"
-        , llrnMaxClockSkew = error "Cardano.Gen.Server.runLocalServer: llrnMaxClockSkew"
-
-        , llrnVersionDataNTC = NodeToClient.NodeToClientVersionData networkMagic
-        , llrnVersionDataNTN = NodeToNode.NodeToNodeVersionData networkMagic (daDiffusionMode difArgs)
-        , llrnNodeToNodeVersions = supportedNodeToNodeVersions (Proxy @blk)
-        , llrnNodeToClientVersions = supportedNodeToClientVersions (Proxy @blk)
-        }
+        aStateQueryServer
+          :: localPeer
+          -> Channel IO ByteString
+          -> IO ((), Maybe ByteString)
+        aStateQueryServer them channel =
+          runPeer
+            nullTracer
+            cStateQueryCodec
+            channel
+            (Effect (forever $ threadDelay 3_600_000_000))
 
 
-runLocalServerWithManager
-    :: IOManager -> DiffusionTracers -> DiffusionArguments
-    -> DiffusionApplications RemoteAddress LocalAddress NodeToNodeVersionData NodeToClientVersionData IO
-    -> NetworkMutableState LocalAddress
-    -> IO ()
-runLocalServerWithManager iocp tracers difArgs applications networkLocalState =
+withSnocket
+    :: forall a.
+       IOManager
+    -> FilePath
+    -> (LocalSocket -> LocalSnocket -> IO a)
+    -> IO a
+withSnocket iocp localAddress k =
     bracket localServerInit localServerCleanup localServerBody
   where
     localServerInit :: IO (LocalSocket, LocalSnocket)
-    localServerInit =
-      case daLocalAddress difArgs of
-        Left sd -> do
-          a <- Socket.getSocketName sd
-          case a of
-            Socket.SockAddrUnix path -> do
-              traceInitializer $ UsingSystemdSocket path
-              pure (LocalSocket sd, Snocket.localSnocket iocp path)
-            unsupportedAddr -> do
-              traceInitializer $ UnsupportedLocalSystemdSocket unsupportedAddr
-              error "UnsupportedLocalSocketType"
-        Right addr -> do
-          let sn = Snocket.localSnocket iocp addr
-          traceInitializer $ CreateSystemdSocketForSnocketPath addr
-          sd <- Snocket.open sn (Snocket.addrFamily sn $ Snocket.localAddressFromPath addr)
-          traceInitializer $ CreatedLocalSocket addr
-          pure (sd, sn)
+    localServerInit = do
+      let sn = Snocket.localSnocket iocp localAddress
+      sd <- Snocket.open sn
+              (Snocket.addrFamily sn
+                $ Snocket.localAddressFromPath localAddress)
+      pure (sd, sn)
 
     -- We close the socket here, even if it was provided for us.
     localServerCleanup :: (LocalSocket, LocalSnocket) -> IO ()
     localServerCleanup (sd, sn) = Snocket.close sn sd
 
-    localServerBody :: (LocalSocket, LocalSnocket) -> IO ()
+    localServerBody :: (LocalSocket, LocalSnocket) -> IO a
     localServerBody (sd, sn) = do
-      case daLocalAddress difArgs of
-        -- If a socket was provided it should be ready to accept
-        Left _ -> pure ()
-        Right path -> do
-          Snocket.localSocketFileDescriptor sd
-            >>= traceInitializer . ConfiguringLocalSocket path
-
-
-          Snocket.bind sn sd $ Snocket.localAddressFromPath path
-          Snocket.localSocketFileDescriptor sd
-            >>= traceInitializer . ListeningLocalSocket path
-
-          Snocket.listen sn sd
-
-          Snocket.localSocketFileDescriptor sd
-            >>= traceInitializer . LocalSocketUp path
-
-          Snocket.getLocalAddr sn sd
-            >>= traceInitializer . RunLocalServer
-
-      void $ NodeToClient.withServer
-                sn
-                (NetworkServerTracers
-                    (dtMuxLocalTracer tracers)
-                    (dtHandshakeLocalTracer tracers)
-                    (dtLocalErrorPolicyTracer tracers)
-                    (dtAcceptPolicyTracer tracers)
-                    )
-                networkLocalState
-                sd
-                (daLocalResponderApplication applications)
-                localErrorPolicy
-
-    traceInitializer :: DiffusionInitializationTracer -> IO ()
-    traceInitializer = traceWith (dtDiffusionInitializationTracer tracers)
-
-    localErrorPolicy :: ErrorPolicies
-    localErrorPolicy  = NodeToNode.localNetworkErrorPolicy <> daErrorPolicies applications
+      Snocket.bind   sn sd (Snocket.localAddressFromPath localAddress)
+      Snocket.listen sn sd
+      k sd sn
