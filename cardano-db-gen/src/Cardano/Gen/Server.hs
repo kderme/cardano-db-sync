@@ -2,11 +2,11 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NumericUnderscores #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE QuantifiedConstraints #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Cardano.Gen.Server
   ( runLocalServer
@@ -17,7 +17,7 @@ import           Control.Exception (bracket)
 import           Control.Monad (forever, void)
 import           Control.Monad.Class.MonadSTM.Strict
 
-import           Control.Tracer (traceWith, nullTracer)
+import           Control.Tracer (nullTracer, traceWith)
 
 import           Data.ByteString.Lazy.Char8 (ByteString)
 import           Data.Map.Strict (Map)
@@ -28,13 +28,15 @@ import           Data.Void (Void)
 import qualified Network.Socket as Socket
 import           Network.TypedProtocol.Core (Peer (..))
 
-import           Ouroboros.Consensus.Network.NodeToClient (Apps (..), DefaultCodecs, Codecs' (..), Handlers (..))
+import           Ouroboros.Consensus.Block (CodecConfig (..))
+import           Ouroboros.Consensus.Config (configCodec)
+import           Ouroboros.Consensus.Ledger.Query (Query)
+import           Ouroboros.Consensus.Ledger.SupportsMempool (ApplyTxErr, GenTx)
+import           Ouroboros.Consensus.Network.NodeToClient (Apps (..), Codecs' (..), DefaultCodecs,
+                   Handlers (..))
 import qualified Ouroboros.Consensus.Network.NodeToClient as NTC
 import           Ouroboros.Consensus.Node (ConnectionId, LowLevelRunNodeArgs (..), NodeKernel,
                    stdVersionDataNTC, stdVersionDataNTN)
-
-import           Ouroboros.Consensus.Block (CodecConfig (..))
-import           Ouroboros.Consensus.Config (configCodec)
 import           Ouroboros.Consensus.Node.DbLock ()
 import           Ouroboros.Consensus.Node.DbMarker ()
 import           Ouroboros.Consensus.Node.ErrorPolicy (consensusErrorPolicy)
@@ -48,9 +50,6 @@ import           Ouroboros.Consensus.Node.Run (SerialiseNodeToClientConstraints)
 import           Ouroboros.Consensus.Node.Tracers ()
 import           Ouroboros.Consensus.NodeKernel (NodeKernelArgs, getPeersFromCurrentLedgerAfterSlot)
 import           Ouroboros.Consensus.Util.Args ()
-import           Ouroboros.Consensus.Ledger.Query (Query)
-import           Ouroboros.Consensus.Ledger.SupportsMempool (ApplyTxErr, GenTx)
-
 
 import           Ouroboros.Network.Channel (Channel)
 import           Ouroboros.Network.Codec (DeserialiseFailure)
@@ -60,24 +59,24 @@ import           Ouroboros.Network.Diffusion (DiffusionApplications (..), Diffus
 import           Ouroboros.Network.Driver.Simple (runPeer)
 import           Ouroboros.Network.ErrorPolicy (ErrorPolicies)
 import           Ouroboros.Network.IOManager (IOManager, withIOManager)
-import           Ouroboros.Network.Mux (OuroborosApplication, MuxMode (..))
 import           Ouroboros.Network.Magic (NetworkMagic)
+import           Ouroboros.Network.Mux (MuxMode (..), OuroborosApplication)
 import           Ouroboros.Network.NodeToClient (NodeToClientVersion, NodeToClientVersionData (..))
 import qualified Ouroboros.Network.NodeToClient as NodeToClient
-import           Ouroboros.Network.NodeToNode (MiniProtocolParameters (..), NodeToNodeVersionData (..),
-                   RemoteAddress, Versions)
+import           Ouroboros.Network.NodeToNode (MiniProtocolParameters (..),
+                   NodeToNodeVersionData (..), RemoteAddress, Versions)
 import qualified Ouroboros.Network.NodeToNode as NodeToNode
 import           Ouroboros.Network.Protocol.Handshake.Version (combineVersions,
                    simpleSingletonVersions)
 import           Ouroboros.Network.Snocket (LocalAddress, LocalSnocket, LocalSocket (..))
 import qualified Ouroboros.Network.Snocket as Snocket
 import           Ouroboros.Network.Socket (NetworkMutableState, NetworkServerTracers (..))
-import           Ouroboros.Network.Util.ShowProxy
+import           Ouroboros.Network.Util.ShowProxy (ShowProxy)
 
-import           Ouroboros.Network.Protocol.ChainSync.Server
-import           Ouroboros.Network.Protocol.LocalStateQuery.Type
-import           Ouroboros.Network.Protocol.LocalStateQuery.Server
-import           Ouroboros.Network.Protocol.TxSubmission.Server
+import           Ouroboros.Network.Protocol.ChainSync.Server (chainSyncServerPeer)
+import           Ouroboros.Network.Protocol.LocalStateQuery.Type (ShowQuery)
+-- import           Ouroboros.Network.Protocol.LocalStateQuery.Server ()
+-- import           Ouroboros.Network.Protocol.TxSubmission.Server ()
 
 import           Cardano.Gen.ChainSync
 
@@ -95,17 +94,17 @@ runLocalServer
     -> Map NodeToClientVersion (BlockNodeToClientVersion blk)
     -> StrictTVar IO (ChainProducerState blk)
     -> IO ()
-runLocalServer networkMagic localAddress nodeToClientVersions chainvar =
+runLocalServer networkMagic localDomainSock nodeToClientVersions chainvar =
     withIOManager $ \ iom ->
-      void $ withSnocket iom localAddress $ \localSocket localSnocket -> do
-        networkState <- NodeToClient.newNetworkMutableState
-        NodeToClient.withServer
-          localSnocket
-          NodeToClient.nullNetworkServerTracers -- TODO: some tracing might be useful.
-          networkState
-          localSocket
-          versions
-          NodeToClient.networkErrorPolicies
+      void $ withSnocket iom localDomainSock $ \ localSocket localSnocket -> do
+                networkState <- NodeToClient.newNetworkMutableState
+                NodeToClient.withServer
+                    localSnocket
+                    NodeToClient.nullNetworkServerTracers -- TODO: some tracing might be useful.
+                    networkState
+                    localSocket
+                    versions
+                    NodeToClient.networkErrorPolicies
 
   where
     versions :: Versions NodeToClientVersion
@@ -168,15 +167,15 @@ withSnocket
     -> FilePath
     -> (LocalSocket -> LocalSnocket -> IO a)
     -> IO a
-withSnocket iocp localAddress k =
+withSnocket iocp localDomainSock k =
     bracket localServerInit localServerCleanup localServerBody
   where
     localServerInit :: IO (LocalSocket, LocalSnocket)
     localServerInit = do
-      let sn = Snocket.localSnocket iocp localAddress
+      let sn = Snocket.localSnocket iocp localDomainSock
       sd <- Snocket.open sn
               (Snocket.addrFamily sn
-                $ Snocket.localAddressFromPath localAddress)
+                $ Snocket.localAddressFromPath localDomainSock)
       pure (sd, sn)
 
     -- We close the socket here, even if it was provided for us.
@@ -185,6 +184,6 @@ withSnocket iocp localAddress k =
 
     localServerBody :: (LocalSocket, LocalSnocket) -> IO a
     localServerBody (sd, sn) = do
-      Snocket.bind   sn sd (Snocket.localAddressFromPath localAddress)
+      Snocket.bind   sn sd (Snocket.localAddressFromPath localDomainSock)
       Snocket.listen sn sd
       k sd sn
