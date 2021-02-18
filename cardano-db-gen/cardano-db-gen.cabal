@@ -29,10 +29,10 @@ library
                         -Wincomplete-record-updates
                         -Wincomplete-uni-patterns
 
-  exposed-modules:      Cardano.Gen
+  exposed-modules:      Cardano.Mock
 
-  other-modules:        Cardano.Gen.ChainSync
-                        Cardano.Gen.Server
+  other-modules:        Cardano.Mock.ChainSync
+                        Cardano.Mock.Server
 
   build-depends:        base                            >= 4.12         && < 4.15
                       , aeson

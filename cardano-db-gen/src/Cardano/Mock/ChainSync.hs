@@ -6,7 +6,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Cardano.Gen.ChainSync
+module Cardano.Mock.ChainSync
   ( chainSyncServer
   , ChainProducerState (..)
   ) where
@@ -20,14 +20,15 @@ import           Codec.CBOR.Write
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
+import           Cardano.Client.Subscription
+
 import           Ouroboros.Network.Block (ChainUpdate (..), Tip (..),
                    Serialised (..), castTip, genesisPoint, pattern TipGenesis)
 import           Ouroboros.Network.Protocol.ChainSync.Server (ChainSyncServer (..),
                    ServerStIdle (..), ServerStNext (..))
 
 import           Ouroboros.Consensus.Node.Serialisation
-import Ouroboros.Consensus.Block
-import Cardano.Client.Subscription
+import           Ouroboros.Consensus.Block
 
 data Chain block
   = Genesis

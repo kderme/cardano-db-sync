@@ -8,7 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Cardano.Gen.Server
+module Cardano.Mock.Server
   ( runLocalServer
   ) where
 
@@ -60,7 +60,7 @@ import           Ouroboros.Network.Util.ShowProxy (ShowProxy)
 import           Ouroboros.Network.Protocol.ChainSync.Server (chainSyncServerPeer)
 import           Ouroboros.Network.Protocol.LocalStateQuery.Type (ShowQuery)
 
-import           Cardano.Gen.ChainSync
+import           Cardano.Mock.ChainSync
 
 runLocalServer
     :: forall blk.
