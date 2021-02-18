@@ -17,72 +17,55 @@ import           Control.Exception (bracket)
 import           Control.Monad (forever, void)
 import           Control.Monad.Class.MonadSTM.Strict
 
-import           Control.Tracer (nullTracer, traceWith)
+import           Control.Tracer (nullTracer)
 
 import           Data.ByteString.Lazy.Char8 (ByteString)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import           Data.Proxy (Proxy (..))
 import           Data.Void (Void)
 
-import qualified Network.Socket as Socket
 import           Network.TypedProtocol.Core (Peer (..))
 
-import           Ouroboros.Consensus.Block (CodecConfig (..))
-import           Ouroboros.Consensus.Config (configCodec)
+import           Ouroboros.Consensus.Block (CodecConfig, HasHeader)
+import           Ouroboros.Consensus.Config (TopLevelConfig, configCodec)
 import           Ouroboros.Consensus.Ledger.Query (Query)
 import           Ouroboros.Consensus.Ledger.SupportsMempool (ApplyTxErr, GenTx)
-import           Ouroboros.Consensus.Network.NodeToClient (Apps (..), Codecs' (..), DefaultCodecs,
-                   Handlers (..))
+import           Ouroboros.Consensus.Network.NodeToClient (Apps (..), Codecs' (..), DefaultCodecs)
 import qualified Ouroboros.Consensus.Network.NodeToClient as NTC
-import           Ouroboros.Consensus.Node (ConnectionId, LowLevelRunNodeArgs (..), NodeKernel,
-                   stdVersionDataNTC, stdVersionDataNTN)
+import           Ouroboros.Consensus.Node (ConnectionId)
 import           Ouroboros.Consensus.Node.DbLock ()
 import           Ouroboros.Consensus.Node.DbMarker ()
-import           Ouroboros.Consensus.Node.ErrorPolicy (consensusErrorPolicy)
 import           Ouroboros.Consensus.Node.InitStorage ()
-import           Ouroboros.Consensus.Node.NetworkProtocolVersion (BlockNodeToClientVersion,
-                   BlockNodeToNodeVersion, supportedNodeToClientVersions,
-                   supportedNodeToNodeVersions)
+import           Ouroboros.Consensus.Node.NetworkProtocolVersion (BlockNodeToClientVersion)
 import           Ouroboros.Consensus.Node.ProtocolInfo ()
 import           Ouroboros.Consensus.Node.Recovery ()
 import           Ouroboros.Consensus.Node.Run (SerialiseNodeToClientConstraints)
 import           Ouroboros.Consensus.Node.Tracers ()
-import           Ouroboros.Consensus.NodeKernel (NodeKernelArgs, getPeersFromCurrentLedgerAfterSlot)
 import           Ouroboros.Consensus.Util.Args ()
 
 import           Ouroboros.Network.Channel (Channel)
-import           Ouroboros.Network.Codec (DeserialiseFailure)
-import           Ouroboros.Network.Diffusion (DiffusionApplications (..), DiffusionArguments (..),
-                   DiffusionInitializationTracer (..), DiffusionTracers (..),
-                   LedgerPeersConsensusInterface (..))
 import           Ouroboros.Network.Driver.Simple (runPeer)
-import           Ouroboros.Network.ErrorPolicy (ErrorPolicies)
 import           Ouroboros.Network.IOManager (IOManager, withIOManager)
 import           Ouroboros.Network.Magic (NetworkMagic)
 import           Ouroboros.Network.Mux (MuxMode (..), OuroborosApplication)
 import           Ouroboros.Network.NodeToClient (NodeToClientVersion, NodeToClientVersionData (..))
 import qualified Ouroboros.Network.NodeToClient as NodeToClient
-import           Ouroboros.Network.NodeToNode (MiniProtocolParameters (..),
-                   NodeToNodeVersionData (..), RemoteAddress, Versions)
-import qualified Ouroboros.Network.NodeToNode as NodeToNode
+import           Ouroboros.Network.NodeToNode (Versions)
 import           Ouroboros.Network.Protocol.Handshake.Version (combineVersions,
                    simpleSingletonVersions)
 import           Ouroboros.Network.Snocket (LocalAddress, LocalSnocket, LocalSocket (..))
 import qualified Ouroboros.Network.Snocket as Snocket
-import           Ouroboros.Network.Socket (NetworkMutableState, NetworkServerTracers (..))
 import           Ouroboros.Network.Util.ShowProxy (ShowProxy)
 
 import           Ouroboros.Network.Protocol.ChainSync.Server (chainSyncServerPeer)
 import           Ouroboros.Network.Protocol.LocalStateQuery.Type (ShowQuery)
--- import           Ouroboros.Network.Protocol.LocalStateQuery.Server ()
--- import           Ouroboros.Network.Protocol.TxSubmission.Server ()
 
 import           Cardano.Gen.ChainSync
 
 runLocalServer
     :: forall blk.
-       ( ShowQuery (Query blk)
+       ( HasHeader blk
+       , ShowQuery (Query blk)
        , ShowProxy blk
        , ShowProxy (ApplyTxErr blk)
        , ShowProxy (GenTx blk)
@@ -90,11 +73,12 @@ runLocalServer
        , SerialiseNodeToClientConstraints blk
        )
     => NetworkMagic
+    -> TopLevelConfig blk
     -> FilePath
     -> Map NodeToClientVersion (BlockNodeToClientVersion blk)
     -> StrictTVar IO (ChainProducerState blk)
     -> IO ()
-runLocalServer networkMagic localDomainSock nodeToClientVersions chainvar =
+runLocalServer networkMagic config localDomainSock nodeToClientVersions chainvar =
     withIOManager $ \ iom ->
       void $ withSnocket iom localDomainSock $ \ localSocket localSnocket -> do
                 networkState <- NodeToClient.newNetworkMutableState
@@ -109,40 +93,40 @@ runLocalServer networkMagic localDomainSock nodeToClientVersions chainvar =
   where
     versions :: Versions NodeToClientVersion
                          NodeToClientVersionData
-                         (OuroborosApplication ResponderMode LocalAddress ByteString IO Void ())
+                         (OuroborosApplication 'ResponderMode LocalAddress ByteString IO Void ())
     versions = combineVersions
             [ simpleSingletonVersions
                   version
                   (NodeToClientVersionData networkMagic)
                   (NTC.responder version
-                    $ mkApps (NTC.defaultCodecs codecConfig blockVersion version))
+                    $ mkApps version blockVersion (NTC.defaultCodecs codecConfig blockVersion version))
             | (version, blockVersion) <- Map.toList nodeToClientVersions
             ]
 
     codecConfig :: CodecConfig blk
-    codecConfig = configCodec undefined -- topConfig
+    codecConfig = configCodec config
 
-    mkApps :: DefaultCodecs blk IO
+    mkApps :: NodeToClientVersion -> BlockNodeToClientVersion blk -> DefaultCodecs blk IO
            -> NTC.Apps IO (ConnectionId addrNTC) ByteString ByteString ByteString ()
-    mkApps Codecs {..}  = Apps {..}
+    mkApps _version blockVersion Codecs {..}  = Apps {..}
       where
         aChainSyncServer
           :: localPeer
           -> Channel IO ByteString
           -> IO ((), Maybe ByteString)
-        aChainSyncServer them channel =
+        aChainSyncServer _them channel =
           runPeer
             nullTracer -- TODO add a tracer!
             cChainSyncCodec
             channel
             $ chainSyncServerPeer
-            $ chainSyncServer () chainvar
+            $ chainSyncServer chainvar codecConfig blockVersion
 
         aTxSubmissionServer
           :: localPeer
           -> Channel IO ByteString
           -> IO ((), Maybe ByteString)
-        aTxSubmissionServer them channel =
+        aTxSubmissionServer _them channel =
           runPeer
             nullTracer
             cTxSubmissionCodec
@@ -153,7 +137,7 @@ runLocalServer networkMagic localDomainSock nodeToClientVersions chainvar =
           :: localPeer
           -> Channel IO ByteString
           -> IO ((), Maybe ByteString)
-        aStateQueryServer them channel =
+        aStateQueryServer _them channel =
           runPeer
             nullTracer
             cStateQueryCodec

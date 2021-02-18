@@ -15,16 +15,19 @@ import           Control.Exception (assert)
 import           Control.Monad.Class.MonadSTM.Strict (MonadSTM, StrictTVar, atomically, readTVar,
                    retry, writeTVar)
 
--- import           Cardano.DbSync.Config.Types (CardanoBlock)
+import           Codec.CBOR.Write
 
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
-import           Ouroboros.Network.Block (ChainUpdate (..), HasHeader (..), Point (..), Tip (..),
-                   blockHash, blockNo, blockPoint, blockSlot, castPoint, castTip, genesisPoint,
-                   pattern BlockPoint, pattern GenesisPoint, pattern TipGenesis)
+import           Ouroboros.Network.Block (ChainUpdate (..), Tip (..),
+                   Serialised (..), castTip, genesisPoint, pattern TipGenesis)
 import           Ouroboros.Network.Protocol.ChainSync.Server (ChainSyncServer (..),
                    ServerStIdle (..), ServerStNext (..))
+
+import           Ouroboros.Consensus.Node.Serialisation
+import Ouroboros.Consensus.Block
+import Cardano.Client.Subscription
 
 data Chain block
   = Genesis
@@ -67,29 +70,32 @@ data FollowerNext
 
 
 chainSyncServer
-    :: forall blk m a.
+    :: forall blk m.
         ( HasHeader blk
         , MonadSTM m
+        , SerialiseNodeToClient blk blk
         )
-    => a -> StrictTVar m (ChainProducerState blk)
-    -> ChainSyncServer blk (Point blk) (Tip blk) m a
-chainSyncServer recvMsgDoneClient chainvar =
+    => StrictTVar m (ChainProducerState blk)
+    -> CodecConfig blk
+    -> BlockNodeToClientVersion blk
+    -> ChainSyncServer (Serialised blk) (Point blk) (Tip blk) m ()
+chainSyncServer chainvar codec blockVersion =
     ChainSyncServer $ idle <$> newFollower
   where
-    idle :: FollowerId -> ServerStIdle blk (Point blk) (Tip blk) m a
+    idle :: FollowerId -> ServerStIdle (Serialised blk) (Point blk) (Tip blk) m ()
     idle r =
       ServerStIdle
         { recvMsgRequestNext = handleRequestNext r
         , recvMsgFindIntersect =  error "chainSyncServer: Intersections not supported!"
-        , recvMsgDoneClient = pure recvMsgDoneClient
+        , recvMsgDoneClient = pure ()
         }
 
-    idle' :: FollowerId -> ChainSyncServer blk (Point blk) (Tip blk) m a
+    idle' :: FollowerId -> ChainSyncServer (Serialised blk) (Point blk) (Tip blk) m ()
     idle' = ChainSyncServer . pure . idle
 
     handleRequestNext :: FollowerId
-                      -> m (Either (ServerStNext blk (Point blk) (Tip blk) m a)
-                                (m (ServerStNext blk (Point blk) (Tip blk) m a)))
+                      -> m (Either (ServerStNext (Serialised blk) (Point blk) (Tip blk) m ())
+                                (m (ServerStNext (Serialised blk) (Point blk) (Tip blk) m ())))
     handleRequestNext r = do
       mupdate <- tryReadChainUpdate r
       case mupdate of
@@ -100,8 +106,8 @@ chainSyncServer recvMsgDoneClient chainvar =
 
     sendNext :: FollowerId
              -> (Tip blk, ChainUpdate blk blk)
-             -> ServerStNext blk (Point blk) (Tip blk) m a
-    sendNext r (tip, AddBlock b) = SendMsgRollForward  b             tip (idle' r)
+             -> ServerStNext (Serialised blk) (Point blk) (Tip blk) m ()
+    sendNext r (tip, AddBlock b) = SendMsgRollForward  (Serialised $ toLazyByteString $ encodeNodeToClient codec blockVersion b)             tip (idle' r)
     sendNext r (tip, RollBack p) = SendMsgRollBackward (castPoint p) tip (idle' r)
 
     newFollower :: m FollowerId
