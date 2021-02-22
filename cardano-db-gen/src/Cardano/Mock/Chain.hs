@@ -12,20 +12,22 @@ import qualified Data.Map.Strict as Map
 import           Data.Map.Strict (Map)
 
 import           Ouroboros.Consensus.Block
+import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
 
 import           Ouroboros.Network.Block (ChainUpdate (..), Tip (..), genesisPoint)
 
-
-data Chain block
-  = Genesis
-  | Chain block :> block
+data Chain' block st
+  = Genesis st
+  | Chain' block st :> (block, st)
   deriving (Eq, Ord, Show, Functor)
+
+type Chain block = Chain' block (Consensus.ExtLedgerState block)
 
 infixl 5 :>
 
 headTip :: HasHeader block => Chain block -> Tip block
-headTip Genesis  = TipGenesis
-headTip (_ :> b) = Tip (blockSlot b) (blockHash b) (blockNo b)
+headTip (Genesis _)  = TipGenesis
+headTip (_ :> (b, _)) = Tip (blockSlot b) (blockHash b) (blockNo b)
 
 data ChainProducerState block = ChainProducerState
   { chainState     :: Chain block
@@ -55,8 +57,8 @@ data FollowerNext
   | FollowerForwardFrom
   deriving (Eq, Show)
 
-initChainProducerState :: ChainProducerState block
-initChainProducerState = ChainProducerState Genesis Map.empty 0
+initChainProducerState ::  Consensus.ExtLedgerState block -> ChainProducerState block
+initChainProducerState st = ChainProducerState (Genesis st) Map.empty 0
 
 successorBlock :: forall block . HasHeader block => Point block -> Chain block -> Maybe block
 successorBlock p c0 | headPoint c0 == p = Nothing
@@ -64,9 +66,9 @@ successorBlock p c0 =
     go c0
   where
     go :: Chain block -> Maybe block
-    go (c :> b' :> b) | blockPoint b' == p = Just b
-                      | otherwise          = go (c :> b')
-    go (Genesis :> b) | p == genesisPoint  = Just b
+    go (c :> (b',st') :> (b, _)) | blockPoint b' == p = Just b
+                          | otherwise          = go (c :> (b',st'))
+    go (Genesis _ :> (b, _))   | p == genesisPoint  = Just b
     go _ = error "successorBlock: point not on chain"
 
 -- | What a follower needs to do next. Should they move on to the next block or
@@ -104,16 +106,16 @@ lookupFollower (ChainProducerState _ cflrst _) fid = cflrst Map.! fid
 
 
 pointOnChain :: HasHeader block => Point block -> Chain block -> Bool
-pointOnChain GenesisPoint               _       = True
-pointOnChain (BlockPoint _ _)           Genesis = False
-pointOnChain p@(BlockPoint pslot phash) (c :> b)
+pointOnChain GenesisPoint               _           = True
+pointOnChain (BlockPoint _ _)           (Genesis _) = False
+pointOnChain p@(BlockPoint pslot phash) (c :> (b, _))
   | pslot >  blockSlot b = False
   | phash == blockHash b = True
   | otherwise            = pointOnChain p c
 
 headPoint :: HasHeader block => Chain block -> Point block
-headPoint Genesis  = genesisPoint
-headPoint (_ :> b) = blockPoint b
+headPoint (Genesis _) = genesisPoint
+headPoint (_ :> (b, _))    = blockPoint b
 
 
 

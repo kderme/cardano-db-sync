@@ -31,6 +31,7 @@ import           Network.TypedProtocol.Core (Peer (..))
 
 import           Ouroboros.Consensus.Block (castPoint, Point, CodecConfig, HasHeader)
 import           Ouroboros.Consensus.Config (TopLevelConfig, configCodec)
+import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
 import           Ouroboros.Consensus.Ledger.Query (Query)
 import           Ouroboros.Consensus.Ledger.SupportsMempool (ApplyTxErr, GenTx)
 import           Ouroboros.Consensus.Network.NodeToClient (Apps (..), Codecs' (..), DefaultCodecs)
@@ -79,16 +80,17 @@ runLocalServer
        , ShowProxy (Query blk)
        , SerialiseNodeToClientConstraints blk
        )
-    => NetworkMagic
+    => Consensus.ExtLedgerState blk
+    -> NetworkMagic
     -> TopLevelConfig blk
     -> FilePath
     -> Map NodeToClientVersion (BlockNodeToClientVersion blk)
     -> IO (ServerHandle IO blk)
-runLocalServer networkMagic config localDomainSock nodeToClientVersions =
+runLocalServer st networkMagic config localDomainSock nodeToClientVersions =
     withIOManager $ \ iom ->
       withSnocket iom localDomainSock $ \ localSocket localSnocket -> do
                 networkState <- NodeToClient.newNetworkMutableState
-                handle <- mkServerHandle
+                handle <- mkServerHandle st
                 _ <- NodeToClient.withServer
                        localSnocket
                        NodeToClient.nullNetworkServerTracers -- TODO: some tracing might be useful.
