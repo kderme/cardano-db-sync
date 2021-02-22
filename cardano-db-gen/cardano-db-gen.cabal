@@ -31,7 +31,8 @@ library
 
   exposed-modules:      Cardano.Mock
 
-  other-modules:        Cardano.Mock.ChainSync
+  other-modules:        Cardano.Mock.Chain
+                        Cardano.Mock.ServerHandle
                         Cardano.Mock.Server
 
   build-depends:        base                            >= 4.12         && < 4.15
