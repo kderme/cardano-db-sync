@@ -29,14 +29,14 @@ library
                         -Wincomplete-record-updates
                         -Wincomplete-uni-patterns
 
-  exposed-modules:      Cardano.Mock
-
-  other-modules:        Cardano.Mock.Chain
-                        Cardano.Mock.ServerHandle
+  exposed-modules:
+                        Cardano.Mock.Chain
                         Cardano.Mock.Server
+                        Cardano.Mock.Types
 
   build-depends:        base                            >= 4.12         && < 4.15
                       , aeson
+                      , async
                       , binary
                       , base16-bytestring
                       , bytestring
@@ -96,10 +96,11 @@ library
                       , vector
                       , yaml
 
-executable cardano-db-gen
+test-suite cardano-db-gen
+  type:                 exitcode-stdio-1.0
   default-language:     Haskell2010
-  main-is:              cardano-db-gen.hs
-  hs-source-dirs:       app
+  main-is:              Main.hs
+  hs-source-dirs:       test
 
   ghc-options:          -Wall
                         -Wcompat
@@ -112,15 +113,27 @@ executable cardano-db-gen
                         -threaded
 
 
-  other-modules:        Paths_cardano_db_gen
+  other-modules:        Test.QSM
 
-  build-depends:        base                            >= 4.12         && < 4.15
+  build-depends:        async
+                      , base                            >= 4.12         && < 4.15
                       , bytestring
                       , cardano-config
                       , cardano-db
+                      , cardano-db-gen
                       , cardano-db-sync
+                      , cardano-db-sync-extended
                       , cardano-prelude
                       , cardano-slotting
+                      , cardano-sync
                       , optparse-applicative
                       , ouroboros-network
+                      , tasty
+                      , tasty-quickcheck
                       , text
+                      , tree-diff
+                      , ouroboros-consensus
+                      , ouroboros-consensus-cardano
+                      , ouroboros-consensus-shelley
+                      , QuickCheck
+                      , quickcheck-state-machine >=0.7

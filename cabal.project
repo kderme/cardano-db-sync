@@ -35,8 +35,6 @@ package postgresql-libpq
 -- ---------------------------------------------------------
 -- Disable all tests by default
 
-tests: False
-
 test-show-details: direct
 
 -- Then enable specific tests in this repo
@@ -45,6 +43,9 @@ package cardano-db
   tests: True
 
 package cardano-db-sync
+  tests: True
+
+package cardano-db-gen
   tests: True
 
 -- These are needed because Nix is doing something crazy.

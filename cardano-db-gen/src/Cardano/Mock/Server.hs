@@ -6,32 +6,38 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Cardano.Mock.Server
-  ( runLocalServer
+  ( -- * server
+    forkServerThread
+
+    -- * ServerHandle api
+  , ServerHandle (..)
+  , stopServer
+  , readChain
   ) where
+
+import           Codec.CBOR.Write (toLazyByteString)
 
 import           Control.Concurrent (threadDelay)
 import           Control.Exception (bracket)
 import           Control.Monad (forever)
-import Control.Monad.Class.MonadSTM.Strict
-    ( readTVar, writeTVar, MonadSTM(atomically), MonadSTMTx(retry) )
-
+import           Control.Monad.Class.MonadSTM.Strict ( readTVar, writeTVar, MonadSTM(atomically), MonadSTMTx(retry) )
+import           Control.Concurrent.Async
 import           Control.Tracer (nullTracer)
-
-import           Codec.CBOR.Write (toLazyByteString)
+import           Control.Monad.Class.MonadSTM.Strict (STM, StrictTVar, newTVarIO)
+import           Cardano.Mock.Chain
 
 import           Data.ByteString.Lazy.Char8 (ByteString)
-import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Void (Void)
 
 import           Network.TypedProtocol.Core (Peer (..))
 
 import           Ouroboros.Consensus.Block (castPoint, Point, CodecConfig, HasHeader)
-import           Ouroboros.Consensus.Config (TopLevelConfig, configCodec)
-import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
+import           Ouroboros.Consensus.Config ()
 import           Ouroboros.Consensus.Ledger.Query (Query)
 import           Ouroboros.Consensus.Ledger.SupportsMempool (ApplyTxErr, GenTx)
 import           Ouroboros.Consensus.Network.NodeToClient (Apps (..), Codecs' (..), DefaultCodecs)
@@ -40,7 +46,8 @@ import           Ouroboros.Consensus.Node (ConnectionId)
 import           Ouroboros.Consensus.Node.DbLock ()
 import           Ouroboros.Consensus.Node.DbMarker ()
 import           Ouroboros.Consensus.Node.InitStorage ()
-import           Ouroboros.Consensus.Node.NetworkProtocolVersion (BlockNodeToClientVersion)
+import           Ouroboros.Consensus.Node.NetworkProtocolVersion ()
+import           Ouroboros.Consensus.Node.NetworkProtocolVersion (BlockNodeToClientVersion, NodeToClientVersion, SupportedNetworkProtocolVersion, supportedNodeToClientVersions)
 import           Ouroboros.Consensus.Node.ProtocolInfo ()
 import           Ouroboros.Consensus.Node.Recovery ()
 import           Ouroboros.Consensus.Node.Run (SerialiseNodeToClientConstraints)
@@ -54,20 +61,50 @@ import           Ouroboros.Network.Driver.Simple (runPeer)
 import           Ouroboros.Network.IOManager (IOManager, withIOManager)
 import           Ouroboros.Network.Magic (NetworkMagic)
 import           Ouroboros.Network.Mux (MuxMode (..), OuroborosApplication)
-import           Ouroboros.Network.NodeToClient (NodeToClientVersion, NodeToClientVersionData (..))
+import           Ouroboros.Network.NodeToClient (NodeToClientVersionData (..))
 import qualified Ouroboros.Network.NodeToClient as NodeToClient
 import           Ouroboros.Network.NodeToNode (Versions)
 import           Ouroboros.Network.Protocol.Handshake.Version (combineVersions,
                    simpleSingletonVersions)
 import           Ouroboros.Network.Snocket (LocalAddress, LocalSnocket, LocalSocket (..))
 import qualified Ouroboros.Network.Snocket as Snocket
-import           Ouroboros.Network.Util.ShowProxy (ShowProxy)
+import           Ouroboros.Network.Util.ShowProxy (ShowProxy, Proxy(..))
 
 import           Ouroboros.Network.Protocol.ChainSync.Server (ChainSyncServer, ServerStNext(SendMsgRollForward, SendMsgRollBackward),  ServerStIdle (..), ChainSyncServer (..), chainSyncServerPeer)
 import           Ouroboros.Network.Protocol.LocalStateQuery.Type (ShowQuery)
 
-import           Cardano.Mock.Chain
-import           Cardano.Mock.ServerHandle
+
+data ServerHandle m blk = ServerHandle
+  { chainProducerState :: StrictTVar m (ChainProducerState blk)
+  , threadHandle :: Async ()
+  }
+
+readChain :: MonadSTM m => ServerHandle m blk -> STM m (Chain blk)
+readChain handle = do
+  chainState <$> readTVar (chainProducerState handle)
+
+stopServer :: ServerHandle m blk -> IO ()
+stopServer = cancel . threadHandle
+
+forkServerThread
+    :: forall blk.
+       ( HasHeader blk
+       , ShowQuery (Query blk)
+       , ShowProxy blk
+       , ShowProxy (ApplyTxErr blk)
+       , ShowProxy (GenTx blk)
+       , ShowProxy (Query blk)
+       , SerialiseNodeToClientConstraints blk
+       , SupportedNetworkProtocolVersion blk
+       )
+    => NetworkMagic
+    -> FilePath
+    -> IO (ServerHandle IO blk)
+forkServerThread networkMagic path = do
+    chainSt <- newTVarIO initChainProducerState
+    thread <- async $ runLocalServer networkMagic path chainSt
+    return $ ServerHandle chainSt thread
+
 
 -- | Must be called from the main thread
 runLocalServer
@@ -79,47 +116,45 @@ runLocalServer
        , ShowProxy (GenTx blk)
        , ShowProxy (Query blk)
        , SerialiseNodeToClientConstraints blk
+       , SupportedNetworkProtocolVersion blk
        )
-    => Consensus.ExtLedgerState blk
-    -> NetworkMagic
-    -> TopLevelConfig blk
+    => NetworkMagic
     -> FilePath
-    -> Map NodeToClientVersion (BlockNodeToClientVersion blk)
-    -> IO (ServerHandle IO blk)
-runLocalServer st networkMagic config localDomainSock nodeToClientVersions =
+    -> StrictTVar IO (ChainProducerState blk)
+    -> IO ()
+runLocalServer networkMagic localDomainSock chainProducerState =
     withIOManager $ \ iom ->
       withSnocket iom localDomainSock $ \ localSocket localSnocket -> do
                 networkState <- NodeToClient.newNetworkMutableState
-                handle <- mkServerHandle st
                 _ <- NodeToClient.withServer
                        localSnocket
                        NodeToClient.nullNetworkServerTracers -- TODO: some tracing might be useful.
                        networkState
                        localSocket
-                       (versions handle)
+                       (versions chainProducerState)
                        NodeToClient.networkErrorPolicies
-                return handle
+                return ()
 
   where
-    versions :: ServerHandle IO blk
+    versions :: StrictTVar IO (ChainProducerState blk)
              -> Versions NodeToClientVersion
                          NodeToClientVersionData
                          (OuroborosApplication 'ResponderMode LocalAddress ByteString IO Void ())
-    versions handle = combineVersions
+    versions state = combineVersions
             [ simpleSingletonVersions
                   version
                   (NodeToClientVersionData networkMagic)
                   (NTC.responder version
-                    $ mkApps handle version blockVersion (NTC.defaultCodecs codecConfig blockVersion version))
-            | (version, blockVersion) <- Map.toList nodeToClientVersions
+                    $ mkApps state version blockVersion (NTC.defaultCodecs codecConfig blockVersion version))
+            | (version, blockVersion) <- Map.toList $ supportedNodeToClientVersions (Proxy @blk)
             ]
 
     codecConfig :: CodecConfig blk
-    codecConfig = configCodec config
+    codecConfig = undefined
 
-    mkApps :: ServerHandle IO blk -> NodeToClientVersion -> BlockNodeToClientVersion blk -> DefaultCodecs blk IO
+    mkApps :: StrictTVar IO (ChainProducerState blk) -> NodeToClientVersion -> BlockNodeToClientVersion blk -> DefaultCodecs blk IO
            -> NTC.Apps IO (ConnectionId addrNTC) ByteString ByteString ByteString ()
-    mkApps handle _version blockVersion Codecs {..}  = Apps {..}
+    mkApps chain _version blockVersion Codecs {..}  = Apps {..}
       where
         aChainSyncServer
           :: localPeer
@@ -131,7 +166,7 @@ runLocalServer st networkMagic config localDomainSock nodeToClientVersions =
             cChainSyncCodec
             channel
             $ chainSyncServerPeer
-            $ chainSyncServer handle codecConfig blockVersion
+            $ chainSyncServer chain codecConfig blockVersion
 
         aTxSubmissionServer
           :: localPeer
@@ -161,11 +196,11 @@ chainSyncServer
         , MonadSTM m
         , SerialiseNodeToClient blk blk
         )
-    => ServerHandle m blk
+    => StrictTVar m (ChainProducerState blk)
     -> CodecConfig blk
     -> BlockNodeToClientVersion blk
     -> ChainSyncServer (Serialised blk) (Point blk) (Tip blk) m ()
-chainSyncServer handle codec blockVersion =
+chainSyncServer state codec blockVersion =
     ChainSyncServer $ idle <$> newFollower
   where
     idle :: FollowerId -> ServerStIdle (Serialised blk) (Point blk) (Tip blk) m ()
@@ -198,31 +233,31 @@ chainSyncServer handle codec blockVersion =
 
     newFollower :: m FollowerId
     newFollower = atomically $ do
-      cps <- readTVar $ chainProducerState handle
+      cps <- readTVar state
       let (cps', rid) = initFollower genesisPoint cps
-      _ <- writeTVar (chainProducerState handle) cps'
+      _ <- writeTVar state cps'
       pure rid
 
     tryReadChainUpdate :: FollowerId
                        -> m (Maybe (Tip blk, ChainUpdate blk blk))
     tryReadChainUpdate rid =
       atomically $ do
-        cps <- readTVar $ chainProducerState handle
+        cps <- readTVar state
         case followerInstruction rid cps of
           Nothing -> pure Nothing
           Just (u, cps') -> do
-            writeTVar (chainProducerState handle) cps'
+            writeTVar state cps'
             let chain = chainState cps'
             pure $ Just (castTip (headTip chain), u)
 
     readChainUpdate :: FollowerId -> m (Tip blk, ChainUpdate blk blk)
     readChainUpdate rid =
       atomically $ do
-        cps <- readTVar $ chainProducerState handle
+        cps <- readTVar state
         case followerInstruction rid cps of
           Nothing -> retry
           Just (u, cps') -> do
-            writeTVar (chainProducerState handle) cps'
+            writeTVar state cps'
             let chain = chainState cps'
             pure (castTip (headTip chain), u)
 

@@ -14,10 +14,11 @@ import           Data.Map.Strict (Map)
 import           Ouroboros.Consensus.Block
 import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
 
-import           Ouroboros.Network.Block (ChainUpdate (..), Tip (..), genesisPoint)
+import           Ouroboros.Network.Block (ChainUpdate (..), Point, Tip (..), genesisPoint)
 
 data Chain' block st
-  = Genesis st
+  = Uninitiated
+  | Genesis st
   | Chain' block st :> (block, st)
   deriving (Eq, Ord, Show, Functor)
 
@@ -57,8 +58,8 @@ data FollowerNext
   | FollowerForwardFrom
   deriving (Eq, Show)
 
-initChainProducerState ::  Consensus.ExtLedgerState block -> ChainProducerState block
-initChainProducerState st = ChainProducerState (Genesis st) Map.empty 0
+initChainProducerState :: ChainProducerState block
+initChainProducerState = ChainProducerState Uninitiated Map.empty 0
 
 successorBlock :: forall block . HasHeader block => Point block -> Chain block -> Maybe block
 successorBlock p c0 | headPoint c0 == p = Nothing
