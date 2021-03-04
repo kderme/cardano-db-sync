@@ -86,6 +86,8 @@ readChain handle = do
 stopServer :: ServerHandle m blk -> IO ()
 stopServer = cancel . threadHandle
 
+extendChain :: ServerHandle m blk
+
 forkServerThread
     :: forall blk.
        ( HasHeader blk

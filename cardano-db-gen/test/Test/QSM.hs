@@ -34,6 +34,7 @@ import           Ouroboros.Consensus.Cardano.CanHardFork
 import           Ouroboros.Consensus.HardFork.Combinator.Basics
 import           Ouroboros.Consensus.Ledger.Basics
 import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
+import qualified Ouroboros.Consensus.Node.ProtocolInfo as Consensus
 import           Ouroboros.Consensus.Shelley.Protocol
 
 import           Test.QuickCheck
@@ -68,7 +69,7 @@ qsmTests =
 
 data Model c (r :: Type -> Type)
   = Model
-      { chain :: Maybe (Chain c)
+      { chain :: Chain c
       }
   deriving (Generic)
 
@@ -79,7 +80,7 @@ deriving instance (ToExpr (ExtLedgerState c), ToExpr (Block c)) => ToExpr (Chain
 deriving instance (ToExpr (ExtLedgerState c), ToExpr (Block c)) => ToExpr (Model c Concrete)
 
 initModel :: Model c r
-initModel = Model Nothing
+initModel = Model Uninitiated
 
 data Command c (r :: Type -> Type)
   = AddGenesis (ExtLedgerState c)
@@ -105,7 +106,10 @@ data Error = Error
 type Config = ()
 
 transition :: Config -> Model c r -> Command c r -> Response c r -> Model c r
-transition cfg Model {..} cmd _resp = undefined
+transition cfg Model {..} cmd _resp = case cmd of
+  AddGenesis st -> Model $ Genesis st
+  AddBlock blk -> 
+  RollBack _ _ -> error "rollback not supported"
 
 precondition :: Model c Symbolic -> Command c Symbolic -> Logic
 precondition Model {..} _ = Top
@@ -169,6 +173,12 @@ prop_1 = noShrinking $ withMaxSuccess 1
       }
 
     socketPath = "testfiles/.socket"
+
+setupDbSync :: IO ()
+setupDbSync = do
+  config <- readSyncNodeConfig enpConfigFile enp
+  genCfg <- readCardanoGenesisConfig config
+  let topLevelConfig = Consensus.pInfoConfig $ mkProtocolInfoCardano genCfg
 
 instance ToExpr (ExtLedgerState StandardCrypto) where
   toExpr _ = Lst [] -- TODO

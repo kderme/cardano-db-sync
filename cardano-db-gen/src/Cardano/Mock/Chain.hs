@@ -10,11 +10,21 @@ module Cardano.Mock.Chain where
 import           Control.Exception (assert)
 import qualified Data.Map.Strict as Map
 import           Data.Map.Strict (Map)
+import           Data.Maybe (fromMaybe)
 
 import           Ouroboros.Consensus.Block
+import           Ouroboros.Consensus.Config
 import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
 
 import           Ouroboros.Network.Block (ChainUpdate (..), Point, Tip (..), genesisPoint)
+
+data ChainDB block = ChainDB
+  { chainConfig :: TopLevelConfig block
+  , cchain :: Chain block
+  }
+
+initChainDB :: TopLevelConfig block -> ChainDB block
+initChainDB config = ChainDB config Uninitiated
 
 data Chain' block st
   = Uninitiated
@@ -29,6 +39,15 @@ infixl 5 :>
 headTip :: HasHeader block => Chain block -> Tip block
 headTip (Genesis _)  = TipGenesis
 headTip (_ :> (b, _)) = Tip (blockSlot b) (blockHash b) (blockNo b)
+
+extendChain :: ChainDB block -> block -> ChainDB block
+extendChain chain blk = undefined $
+  fromMaybe (error "can't apply block to an Uninitiated chain") (getTipState . cchain chain)
+
+getTipState :: Chain' blk st -> Maybe st
+getTipState Uninitiated = Nothing
+getTipState (Genesis st) = Just st
+getTipState (_ :> (_, st)) = Just st
 
 data ChainProducerState block = ChainProducerState
   { chainState     :: Chain block
