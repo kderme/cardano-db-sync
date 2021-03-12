@@ -73,6 +73,7 @@ library
                       , network-mux
                       , optparse-applicative
                       , pretty-show
+                      , mtl
                       , network
                       , ouroboros-consensus
                       , ouroboros-consensus-byron
@@ -126,6 +127,8 @@ test-suite cardano-db-gen
                       , cardano-prelude
                       , cardano-slotting
                       , cardano-sync
+                      , io-sim-classes
+                      , mtl
                       , optparse-applicative
                       , ouroboros-network
                       , tasty
@@ -136,4 +139,4 @@ test-suite cardano-db-gen
                       , ouroboros-consensus-cardano
                       , ouroboros-consensus-shelley
                       , QuickCheck
-                      , quickcheck-state-machine >=0.7
+                      , quickcheck-state-machine >= 0.7

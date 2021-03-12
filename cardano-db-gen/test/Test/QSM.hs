@@ -18,22 +18,29 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Test.QSM
-  ( qsmTests,
+  ( qsmTests
+  , mkConfig
+  , params
   )
 where
 
 import           Control.Concurrent.Async
+import           Control.Monad.Class.MonadSTM
+import           Control.Monad.Except
 import           Control.Monad.IO.Class
 import           Data.Kind (Type)
+import qualified Data.Text as Text
 import           GHC.Generics
 
-import           Ouroboros.Network.Block
+import           Ouroboros.Network.Block hiding (AddBlock, RollBack)
 import           Ouroboros.Network.Magic
 
 import           Ouroboros.Consensus.Cardano.CanHardFork
+import           Ouroboros.Consensus.Config
 import           Ouroboros.Consensus.HardFork.Combinator.Basics
 import           Ouroboros.Consensus.Ledger.Basics
 import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
+import           Ouroboros.Consensus.Ledger.SupportsProtocol
 import qualified Ouroboros.Consensus.Node.ProtocolInfo as Consensus
 import           Ouroboros.Consensus.Shelley.Protocol
 
@@ -48,6 +55,7 @@ import           Test.Tasty.QuickCheck
 
 import           Cardano.DbSync (runDbSyncNode)
 import           Cardano.DbSync.Plugin.Extended
+import           Cardano.Sync.Config.Cardano
 
 import qualified Cardano.Mock.Chain as Chain
 import           Cardano.Mock.Server
@@ -55,37 +63,45 @@ import           Cardano.Mock.Types
 
 import           Cardano.Sync.Config
 import           Cardano.Sync.Config.Types
+import           Cardano.Sync.Error
 
 import           Data.TreeDiff.Class
 import           Data.TreeDiff.Expr
 
-
-qsmTests :: TestTree
-qsmTests =
+qsmTests :: (c ~ StandardCrypto, LedgerSupportsProtocol (Block c)) => Config c -> TestTree
+qsmTests cfg =
   testGroup
     "qsm-tests"
-        [ testProperty "qsm" prop_1]
+        [ testProperty "qsm" (prop_1 cfg)]
 
+mkConfig :: SyncNodeParams -> IO (Config StandardCrypto)
+mkConfig params = do
+  config <- readSyncNodeConfig $ enpConfigFile params
+  genCfg <- either (error . Text.unpack . renderSyncNodeError) id <$> (runExceptT $ readCardanoGenesisConfig config)
+  return $ Consensus.pInfoConfig $ mkProtocolInfoCardano genCfg
 
 data Model c (r :: Type -> Type)
   = Model
-      { chain :: Chain c
+      { chain :: Chain.ChainDB (Block c)
       }
   deriving (Generic)
 
 deriving instance (Show (Block c), Show (ExtLedgerState c)) => Show (Model c r)
-deriving instance (Eq (Block c), Eq (ExtLedgerState c)) => Eq (Model c r)
+deriving instance (Eq (Chain c)) => Eq (Model c r)
 deriving instance Generic (Chain c)
+deriving instance Generic (Chain.ChainDB c)
 deriving instance (ToExpr (ExtLedgerState c), ToExpr (Block c)) => ToExpr (Chain c)
+instance (ToExpr (ExtLedgerState c), ToExpr (Block c)) => ToExpr (Chain.ChainDB (Block c)) where
+  toExpr = toExpr . Chain.cchain
 deriving instance (ToExpr (ExtLedgerState c), ToExpr (Block c)) => ToExpr (Model c Concrete)
 
-initModel :: Model c r
-initModel = Model Uninitiated
+initModel :: Config c -> Model c r
+initModel cfg = Model $ Chain.initChainDB cfg
 
 data Command c (r :: Type -> Type)
   = AddGenesis (ExtLedgerState c)
   | AddBlock (Block c)
-  | RollBack Int (Block c)
+  | RollBack Int
   deriving (Generic1, Rank2.Functor, Rank2.Foldable, Rank2.Traversable, CommandNames)
 
 deriving instance (Show (Block c), CardanoHardForkConstraints c) => Show (Command c r)
@@ -103,22 +119,20 @@ data Success = Unit
 data Error = Error
   deriving (Eq, Show, Generic, ToExpr)
 
-type Config = ()
-
-transition :: Config -> Model c r -> Command c r -> Response c r -> Model c r
-transition cfg Model {..} cmd _resp = case cmd of
-  AddGenesis st -> Model $ Genesis st
-  AddBlock blk -> 
-  RollBack _ _ -> error "rollback not supported"
+transition :: forall c r. LedgerSupportsProtocol (Block c) => Model c r -> Command c r -> Response c r -> Model c r
+transition Model {..} cmd _resp = case cmd of
+  AddGenesis st -> Model $ Chain.insertGenesis chain st
+  AddBlock blk -> Model $ Chain.extendChain @(Block c) undefined blk
+  RollBack _ -> error "rollback not supported"
 
 precondition :: Model c Symbolic -> Command c Symbolic -> Logic
 precondition Model {..} _ = Top
 
-postcondition :: Config -> Model c Concrete -> Command c Concrete -> Response c Concrete -> Logic
+postcondition :: Config c -> Model c Concrete -> Command c Concrete -> Response c Concrete -> Logic
 postcondition cfg m@Model {..} cmd resp =
   resp .== toMock cfg m cmd
 
-toMock :: Config -> Model c r -> Command c r -> Response c r
+toMock :: Config c -> Model c r -> Command c r -> Response c r
 toMock cfg Model {..} cmd = Response $ Right Unit
 
 generator :: Model c Symbolic -> Maybe (Gen (Command c Symbolic))
@@ -127,58 +141,57 @@ generator Model {..} = Nothing
 shrinker :: Model c Symbolic -> Command c Symbolic -> [Command c Symbolic]
 shrinker _ _ = []
 
-semantics :: Config -> ServerHandle m blk -> Command c Concrete -> IO (Response c Concrete)
-semantics cfg _ _ = undefined
+semantics :: ServerHandle m blk -> Command c Concrete -> IO (Response c Concrete)
+semantics handle cmd = do
+  _ <- atomically $ case cmd of
+    AddGenesis st -> addGenesis handle st
+    AddBlock blk -> addBlock handle blk
+    RollBack _ -> error "not supported"
+  return $ Response $ Right Unit
 
-mock :: Config -> Model c Symbolic -> Command c Symbolic -> GenSym (Response c Symbolic)
+mock :: Config c -> Model c Symbolic -> Command c Symbolic -> GenSym (Response c Symbolic)
 mock cfg m cmd = return $ toMock cfg m cmd
 
-mkSM :: Config -> ServerHandle m blk -> StateMachine (Model c) (Command c) IO (Response c)
+mkSM :: forall c m blk. LedgerSupportsProtocol (Block c) => Config c -> ServerHandle m blk -> StateMachine (Model c) (Command c) IO (Response c)
 mkSM cfg handle =
   StateMachine
-    initModel
-    (transition cfg)
+    (initModel cfg)
+    transition
     precondition
     (postcondition cfg)
     Nothing
     generator
     shrinker
-    (semantics cfg handle)
+    (semantics handle)
     (mock cfg)
     noCleanup
 
-unusedSM :: c ~ StandardCrypto => Config -> StateMachine (Model c) (Command c) IO (Response c)
+unusedSM :: forall c. LedgerSupportsProtocol (Block c) => Config c -> StateMachine (Model c) (Command c) IO (Response c)
 unusedSM cfg = mkSM cfg $ error "ServerHandle not used on generation or shrinking"
 
-prop_1 :: Property
-prop_1 = noShrinking $ withMaxSuccess 1
-  $ forAllCommands (unusedSM ()) Nothing
+prop_1 :: forall c. (c ~ StandardCrypto, LedgerSupportsProtocol (Block c), MockServerConstraint (Block c)) => Config c -> Property
+prop_1 cfg = noShrinking $ withMaxSuccess 1
+  $ forAllCommands smc Nothing
   $ \cmds -> monadicIO $ do
-    mockServer <- liftIO $ forkServerThread @(Block StandardCrypto) (NetworkMagic 42) socketPath
+    mockServer <- liftIO $ forkServerThread @(Block c) cfg (NetworkMagic 42) $ unSocketPath (enpSocketPath params)
     node <- liftIO $ async $ runDbSyncNode extendedDbSyncNodePlugin params
     liftIO $ link node
-    let sm = mkSM () mockServer
+    let sm = mkSM @c cfg mockServer
     (hist, _model, res) <- runCommands sm cmds
     liftIO $ cancel node
     liftIO $ stopServer mockServer
     prettyCommands sm hist (res === Ok)
   where
-    params :: SyncNodeParams
-    params = SyncNodeParams
-      { enpConfigFile = ConfigFile "testfiles/config.json"
-      , enpSocketPath = SocketPath socketPath
-      , enpLedgerStateDir = LedgerStateDir "testfiles/ledger-states"
-      , enpMigrationDir = MigrationDir "../schema"
-      , enpMaybeRollback = Nothing
-      }
+    smc = unusedSM @c cfg
 
-    socketPath = "testfiles/.socket"
-
-setupDbSync :: IO ()
-setupDbSync = do
-  config <- readSyncNodeConfig enpConfigFile enp
-  genCfg <- readCardanoGenesisConfig config
-  let topLevelConfig = Consensus.pInfoConfig $ mkProtocolInfoCardano genCfg
+params :: SyncNodeParams
+params = SyncNodeParams
+  { enpConfigFile = ConfigFile "testfiles/config.json"
+  , enpSocketPath = SocketPath "testfiles/.socket"
+  , enpLedgerStateDir = LedgerStateDir "testfiles/ledger-states"
+  , enpMigrationDir = MigrationDir "../schema"
+  , enpMaybeRollback = Nothing
+  }
 
 instance ToExpr (ExtLedgerState StandardCrypto) where
   toExpr _ = Lst [] -- TODO

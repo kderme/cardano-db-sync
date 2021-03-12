@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NumericUnderscores #-}
@@ -15,8 +16,11 @@ module Cardano.Mock.Server
 
     -- * ServerHandle api
   , ServerHandle (..)
-  , stopServer
+  , MockServerConstraint
+  , addGenesis
+  , addBlock
   , readChain
+  , stopServer
   ) where
 
 import           Codec.CBOR.Write (toLazyByteString)
@@ -24,7 +28,7 @@ import           Codec.CBOR.Write (toLazyByteString)
 import           Control.Concurrent (threadDelay)
 import           Control.Exception (bracket)
 import           Control.Monad (forever)
-import           Control.Monad.Class.MonadSTM.Strict ( readTVar, writeTVar, MonadSTM(atomically), MonadSTMTx(retry) )
+import           Control.Monad.Class.MonadSTM.Strict (modifyTVar, readTVar, writeTVar, MonadSTM(atomically), MonadSTMTx(retry) )
 import           Control.Concurrent.Async
 import           Control.Tracer (nullTracer)
 import           Control.Monad.Class.MonadSTM.Strict (STM, StrictTVar, newTVarIO)
@@ -37,9 +41,10 @@ import           Data.Void (Void)
 import           Network.TypedProtocol.Core (Peer (..))
 
 import           Ouroboros.Consensus.Block (castPoint, Point, CodecConfig, HasHeader)
-import           Ouroboros.Consensus.Config ()
+import           Ouroboros.Consensus.Config (TopLevelConfig)
 import           Ouroboros.Consensus.Ledger.Query (Query)
 import           Ouroboros.Consensus.Ledger.SupportsMempool (ApplyTxErr, GenTx)
+import           Ouroboros.Consensus.Ledger.SupportsProtocol (LedgerSupportsProtocol)
 import           Ouroboros.Consensus.Network.NodeToClient (Apps (..), Codecs' (..), DefaultCodecs)
 import qualified Ouroboros.Consensus.Network.NodeToClient as NTC
 import           Ouroboros.Consensus.Node (ConnectionId)
@@ -79,14 +84,33 @@ data ServerHandle m blk = ServerHandle
   , threadHandle :: Async ()
   }
 
-readChain :: MonadSTM m => ServerHandle m blk -> STM m (Chain blk)
+addGenesis :: MonadSTM m => ServerHandle m blk -> State blk -> STM m ()
+addGenesis handle st =
+  modifyTVar (chainProducerState handle) $ \cps ->
+    cps {chainDB = insertGenesis (chainDB cps) st}
+
+readChain :: MonadSTM m => ServerHandle m blk -> STM m (Maybe (Chain blk))
 readChain handle = do
-  chainState <$> readTVar (chainProducerState handle)
+  cchain . chainDB <$> readTVar (chainProducerState handle)
+
+addBlock :: (LedgerSupportsProtocol blk, MonadSTM m) => ServerHandle m blk -> blk -> STM m ()
+addBlock handle blk =
+  modifyTVar (chainProducerState handle) $ \cps ->
+    cps {chainDB = extendChain (chainDB cps) blk}
 
 stopServer :: ServerHandle m blk -> IO ()
 stopServer = cancel . threadHandle
 
-extendChain :: ServerHandle m blk
+type MockServerConstraint blk =
+    ( HasHeader blk
+    , ShowQuery (Query blk)
+    , ShowProxy blk
+    , ShowProxy (ApplyTxErr blk)
+    , ShowProxy (GenTx blk)
+    , ShowProxy (Query blk)
+    , SerialiseNodeToClientConstraints blk
+    , SupportedNetworkProtocolVersion blk
+    )
 
 forkServerThread
     :: forall blk.
@@ -99,11 +123,12 @@ forkServerThread
        , SerialiseNodeToClientConstraints blk
        , SupportedNetworkProtocolVersion blk
        )
-    => NetworkMagic
+    => TopLevelConfig blk
+    -> NetworkMagic
     -> FilePath
     -> IO (ServerHandle IO blk)
-forkServerThread networkMagic path = do
-    chainSt <- newTVarIO initChainProducerState
+forkServerThread config networkMagic path = do
+    chainSt <- newTVarIO $ initChainProducerState config
     thread <- async $ runLocalServer networkMagic path chainSt
     return $ ServerHandle chainSt thread
 
@@ -249,7 +274,7 @@ chainSyncServer state codec blockVersion =
           Nothing -> pure Nothing
           Just (u, cps') -> do
             writeTVar state cps'
-            let chain = chainState cps'
+            let chain = chainDB cps'
             pure $ Just (castTip (headTip chain), u)
 
     readChainUpdate :: FollowerId -> m (Tip blk, ChainUpdate blk blk)
@@ -260,7 +285,7 @@ chainSyncServer state codec blockVersion =
           Nothing -> retry
           Just (u, cps') -> do
             writeTVar state cps'
-            let chain = chainState cps'
+            let chain = chainDB cps'
             pure (castTip (headTip chain), u)
 
 withSnocket

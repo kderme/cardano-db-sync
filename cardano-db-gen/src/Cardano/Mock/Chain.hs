@@ -4,57 +4,76 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Cardano.Mock.Chain where
 
 import           Control.Exception (assert)
+import           Control.Monad.Except
 import qualified Data.Map.Strict as Map
 import           Data.Map.Strict (Map)
-import           Data.Maybe (fromMaybe)
 
 import           Ouroboros.Consensus.Block
 import           Ouroboros.Consensus.Config
+import           Ouroboros.Consensus.Ledger.Abstract
 import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
+import           Ouroboros.Consensus.Ledger.SupportsProtocol
 
-import           Ouroboros.Network.Block (ChainUpdate (..), Point, Tip (..), genesisPoint)
+import           Ouroboros.Network.Block (ChainUpdate (..), Tip (..), genesisPoint)
 
 data ChainDB block = ChainDB
   { chainConfig :: TopLevelConfig block
-  , cchain :: Chain block
+  , cchain :: Maybe (Chain block)
   }
 
-initChainDB :: TopLevelConfig block -> ChainDB block
-initChainDB config = ChainDB config Uninitiated
+instance (Eq (Chain blk)) => Eq (ChainDB blk) where
+  a == b = cchain a == cchain b
 
-data Chain' block st
-  = Uninitiated
-  | Genesis st
+instance (Show (Chain blk)) => Show (ChainDB blk) where
+  show = show . cchain
+
+type State block = Consensus.ExtLedgerState block
+
+initChainDB :: TopLevelConfig block -> ChainDB block
+initChainDB config = ChainDB config Nothing
+
+data Chain' block st =
+    Genesis st
   | Chain' block st :> (block, st)
   deriving (Eq, Ord, Show, Functor)
 
-type Chain block = Chain' block (Consensus.ExtLedgerState block)
+type Chain block = Chain' block (State block)
 
 infixl 5 :>
 
-headTip :: HasHeader block => Chain block -> Tip block
-headTip (Genesis _)  = TipGenesis
-headTip (_ :> (b, _)) = Tip (blockSlot b) (blockHash b) (blockNo b)
+headTip :: HasHeader block => ChainDB block -> Tip block
+headTip chainDB = case cchain chainDB of
+  Nothing -> error "headTip for uninitiated ChainDB"
+  Just (Genesis _) -> TipGenesis
+  Just (_ :> (b, _)) -> Tip (blockSlot b) (blockHash b) (blockNo b)
 
-extendChain :: ChainDB block -> block -> ChainDB block
-extendChain chain blk = undefined $
-  fromMaybe (error "can't apply block to an Uninitiated chain") (getTipState . cchain chain)
+insertGenesis :: ChainDB block -> State block -> ChainDB block
+insertGenesis chainDB st = case cchain chainDB of
+  Nothing -> chainDB {cchain = Just $ Genesis st}
+  Just _ -> error "Tried to insertGenesis to an initiated chain"
 
-getTipState :: Chain' blk st -> Maybe st
-getTipState Uninitiated = Nothing
-getTipState (Genesis st) = Just st
-getTipState (_ :> (_, st)) = Just st
+extendChain :: LedgerSupportsProtocol block => ChainDB block -> block -> ChainDB block
+extendChain chainDB blk = case cchain chainDB of
+  Nothing -> error "can't apply block to an Uninitiated chain"
+  Just chain ->
+    case runExcept $ tickThenApply (Consensus.ExtLedgerCfg $ chainConfig chainDB) blk (getTipState chain) of
+      Left err -> error $ show err
+      Right st -> chainDB {cchain = Just $ chain :> (blk, st)}
+
+getTipState :: Chain' blk st -> st
+getTipState (Genesis st) = st
+getTipState (_ :> (_, st)) = st
 
 data ChainProducerState block = ChainProducerState
-  { chainState     :: Chain block
+  { chainDB        :: ChainDB block
   , chainFollowers :: FollowerStates block
   , nextFollowerId :: FollowerId
   }
-  deriving (Eq, Show)
 
 type FollowerId = Int
 
@@ -77,8 +96,12 @@ data FollowerNext
   | FollowerForwardFrom
   deriving (Eq, Show)
 
-initChainProducerState :: ChainProducerState block
-initChainProducerState = ChainProducerState Uninitiated Map.empty 0
+initChainProducerState :: TopLevelConfig block -> ChainProducerState block
+initChainProducerState config = ChainProducerState (initChainDB config) Map.empty 0
+
+successorMBlock :: forall block . HasHeader block => Point block -> Maybe (Chain block) -> Maybe block
+successorMBlock _ Nothing = Nothing
+successorMBlock point (Just c) = successorBlock point c
 
 successorBlock :: forall block . HasHeader block => Point block -> Chain block -> Maybe block
 successorBlock p c0 | headPoint c0 == p = Nothing
@@ -103,8 +126,8 @@ followerInstruction fid cps@(ChainProducerState c cflrst cfid) =
     let FollowerState {followerPoint, followerNext} = lookupFollower cps fid in
     case followerNext of
       FollowerForwardFrom ->
-          assert (pointOnChain followerPoint c) $
-          case successorBlock followerPoint c of
+          assert (pointOnMChain followerPoint $ cchain c) $
+          case successorMBlock followerPoint $ cchain c of
             -- There is no successor block because the follower is at the head
             Nothing -> Nothing
 
@@ -124,6 +147,9 @@ followerInstruction fid cps@(ChainProducerState c cflrst cfid) =
 lookupFollower :: ChainProducerState block -> FollowerId -> FollowerState block
 lookupFollower (ChainProducerState _ cflrst _) fid = cflrst Map.! fid
 
+pointOnMChain :: HasHeader block => Point block -> Maybe (Chain block) -> Bool
+pointOnMChain _ Nothing = False
+pointOnMChain point (Just c) = pointOnChain point c
 
 pointOnChain :: HasHeader block => Point block -> Chain block -> Bool
 pointOnChain GenesisPoint               _           = True
@@ -147,7 +173,7 @@ initFollower :: HasHeader block
              -> ChainProducerState block
              -> (ChainProducerState block, FollowerId)
 initFollower point (ChainProducerState c cflrst cfid) =
-    assert (pointOnChain point c)
+    assert (pointOnMChain point $ cchain c)
       (ChainProducerState c (Map.insert cfid flrst cflrst) (succ cfid), cfid)
   where
     flrst = FollowerState
