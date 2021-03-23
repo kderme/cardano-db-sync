@@ -25,7 +25,7 @@ module Test.QSM
 where
 
 import           Control.Concurrent.Async
-import           Control.Monad.Class.MonadSTM
+import           Control.Monad.Class.MonadSTM.Strict
 import           Control.Monad.Except
 import           Control.Monad.IO.Class
 import           Data.Kind (Type)
@@ -133,7 +133,7 @@ postcondition cfg m@Model {..} cmd resp =
   resp .== toMock cfg m cmd
 
 toMock :: Config c -> Model c r -> Command c r -> Response c r
-toMock cfg Model {..} cmd = Response $ Right Unit
+toMock cfg Model {..} _cmd = Response $ Right Unit
 
 generator :: Model c Symbolic -> Maybe (Gen (Command c Symbolic))
 generator Model {..} = Nothing
@@ -141,7 +141,7 @@ generator Model {..} = Nothing
 shrinker :: Model c Symbolic -> Command c Symbolic -> [Command c Symbolic]
 shrinker _ _ = []
 
-semantics :: ServerHandle m blk -> Command c Concrete -> IO (Response c Concrete)
+semantics :: LedgerSupportsProtocol (Block c) => ServerHandle IO (Block c) -> Command c Concrete -> IO (Response c Concrete)
 semantics handle cmd = do
   _ <- atomically $ case cmd of
     AddGenesis st -> addGenesis handle st
@@ -152,7 +152,7 @@ semantics handle cmd = do
 mock :: Config c -> Model c Symbolic -> Command c Symbolic -> GenSym (Response c Symbolic)
 mock cfg m cmd = return $ toMock cfg m cmd
 
-mkSM :: forall c m blk. LedgerSupportsProtocol (Block c) => Config c -> ServerHandle m blk -> StateMachine (Model c) (Command c) IO (Response c)
+mkSM :: forall c. LedgerSupportsProtocol (Block c) => Config c -> ServerHandle IO (Block c) -> StateMachine (Model c) (Command c) IO (Response c)
 mkSM cfg handle =
   StateMachine
     (initModel cfg)
@@ -186,7 +186,7 @@ prop_1 cfg = noShrinking $ withMaxSuccess 1
 
 params :: SyncNodeParams
 params = SyncNodeParams
-  { enpConfigFile = ConfigFile "testfiles/config.json"
+  { enpConfigFile = ConfigFile "test/testfiles/config.json"
   , enpSocketPath = SocketPath "testfiles/.socket"
   , enpLedgerStateDir = LedgerStateDir "testfiles/ledger-states"
   , enpMigrationDir = MigrationDir "../schema"
