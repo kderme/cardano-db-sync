@@ -37,6 +37,7 @@ import qualified Cardano.Ledger.Val as Val
 import           Cardano.Sync.Config.Types
 import qualified Cardano.Sync.Era.Cardano.Util as Cardano
 import qualified Cardano.Sync.Era.Shelley.Generic as Generic
+import           Cardano.Sync.StateQuery
 import           Cardano.Sync.Types hiding (CardanoBlock)
 import           Cardano.Sync.Util
 
@@ -66,15 +67,18 @@ import           Ouroboros.Consensus.Block.Abstract (ConvertRawHash (..))
 import           Ouroboros.Consensus.Cardano.Block (LedgerState (..))
 import           Ouroboros.Consensus.Cardano.CanHardFork ()
 import           Ouroboros.Consensus.Config (TopLevelConfig (..), configCodec, configLedger)
+import           Ouroboros.Consensus.HardFork.Abstract (hardForkSummary)
 import qualified Ouroboros.Consensus.HardFork.Combinator as Consensus
 import           Ouroboros.Consensus.HardFork.Combinator.Basics (LedgerState (..))
 import           Ouroboros.Consensus.HardFork.Combinator.State (epochInfoLedger)
+import qualified Ouroboros.Consensus.HardFork.History as History
 import qualified Ouroboros.Consensus.HeaderValidation as Consensus
 import           Ouroboros.Consensus.Ledger.Abstract (ledgerTipHash, ledgerTipPoint, ledgerTipSlot,
                    tickThenReapply)
 import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerCfg (..), ExtLedgerState (..))
 import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
 import qualified Ouroboros.Consensus.Node.ProtocolInfo as Consensus
+import           Ouroboros.Consensus.BlockchainTime.WallClock.Types (SystemStart (..))
 import           Ouroboros.Consensus.Shelley.Ledger.Block
 import qualified Ouroboros.Consensus.Shelley.Ledger.Ledger as Consensus
 import           Ouroboros.Consensus.Storage.Serialisation (DecodeDisk (..), EncodeDisk (..))
@@ -109,6 +113,7 @@ data LedgerEnv = LedgerEnv
   { leProtocolInfo :: !(Consensus.ProtocolInfo IO CardanoBlock)
   , leDir :: !LedgerStateDir
   , leNetwork :: !Shelley.Network
+  , leSystemStart :: !SystemStart
   , leStateVar :: !(StrictTVar IO CardanoLedgerState)
   , leEventState :: !(StrictTVar IO LedgerEventState)
   , leIndexCache :: !(StrictTVar IO IndexCache)
@@ -150,10 +155,11 @@ data LedgerStateSnapshot = LedgerStateSnapshot
 mkLedgerEnv :: Consensus.ProtocolInfo IO CardanoBlock
             -> LedgerStateDir
             -> Shelley.Network
+            -> SystemStart
             -> SlotNo
             -> Bool
             -> IO LedgerEnv
-mkLedgerEnv protocolInfo dir network slot deleteFiles = do
+mkLedgerEnv protocolInfo dir network systemStart slot deleteFiles = do
     when deleteFiles $
       deleteNewerLedgerStateFiles dir slot
     st <- findLatestLedgerState protocolInfo dir deleteFiles
@@ -164,6 +170,7 @@ mkLedgerEnv protocolInfo dir network slot deleteFiles = do
       { leProtocolInfo = protocolInfo
       , leDir = dir
       , leNetwork = network
+      , leSystemStart = systemStart
       , leStateVar = svar
       , leEventState = evar
       , leIndexCache = ivar
@@ -186,23 +193,25 @@ initCardanoLedgerState pInfo = CardanoLedgerState
 -- The function 'tickThenReapply' does zero validation, so add minimal validation ('blockPrevHash'
 -- matches the tip hash of the 'LedgerState'). This was originally for debugging but the check is
 -- cheap enough to keep.
-applyBlock :: LedgerEnv -> CardanoBlock -> SlotDetails -> IO LedgerStateSnapshot
-applyBlock env blk details =
+applyBlock :: LedgerEnv -> CardanoBlock -> IO LedgerStateSnapshot
+applyBlock env blk = do
     -- 'LedgerStateVar' is just being used as a mutable variable. There should not ever
     -- be any contention on this variable, so putting everything inside 'atomically'
     -- is fine.
-    atomically $ do
-      oldState <- readTVar (leStateVar env)
-      let !newState = oldState { clsState = applyBlk (ExtLedgerCfg (topLevelConfig env)) blk (clsState oldState) }
-      writeTVar (leStateVar env) newState
-      oldEventState <- readTVar (leEventState env)
-      events <- generateEvents env oldEventState  details newState
-      pure $ LedgerStateSnapshot
-                { lssState = newState
-                , lssNewEpoch = maybeToStrict $ mkNewEpoch oldState newState
-                , lssSlotDetails = details
-                , lssEvents = events
-                }
+    oldState <- atomically $ readTVar (leStateVar env)
+    let !newState = oldState { clsState = applyBlk (ExtLedgerCfg (topLevelConfig env)) blk (clsState oldState) }
+    let hfConfig = configLedger $ Consensus.pInfoConfig $ leProtocolInfo env
+    let inter = History.mkInterpreter $ hardForkSummary hfConfig (ledgerState $ clsState newState)
+    details <- getSlotDetails (leSystemStart env) inter (cardanoBlockSlotNo blk)
+    atomically $ writeTVar (leStateVar env) newState
+    oldEventState <- atomically $ readTVar (leEventState env)
+    events <- atomically $ generateEvents env oldEventState  details newState
+    pure $ LedgerStateSnapshot
+              { lssState = newState
+              , lssNewEpoch = maybeToStrict $ mkNewEpoch oldState newState
+              , lssSlotDetails = details
+              , lssEvents = events
+              }
   where
     applyBlk
         :: ExtLedgerCfg CardanoBlock -> CardanoBlock

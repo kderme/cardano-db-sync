@@ -2,6 +2,8 @@ module Cardano.Sync.Plugin
   ( SyncNodePlugin (..)
   ) where
 
+import           Control.Monad.Except
+
 import           Cardano.BM.Trace (Trace)
 
 import           Cardano.Prelude
@@ -33,11 +35,12 @@ data SyncNodePlugin = SyncNodePlugin
     -- of a table.
     plugOnStartup :: [Trace IO Text -> IO (Either SyncNodeError ())]
     -- Called for each block recieved from the network.
+    -- For each block, this will also create and return its `BlockDetails`.
     -- This will not be called for the original genesis block, but will be called for
     -- all subsequent blocks.
     -- Blocks (including epoch boundary blocks) are called in sequence from the oldest to the newest.
-  , plugInsertBlock :: [Trace IO Text -> SyncEnv -> [BlockDetails] -> IO (Either SyncNodeError ())]
-
+  , plugInsertBlock :: Trace IO Text -> SyncEnv -> [CardanoBlock] -> ExceptT SyncNodeError IO [BlockDetails]
+  , plugInsertBlockDetails :: [Trace IO Text -> SyncEnv -> [BlockDetails] -> ExceptT SyncNodeError IO ()]
     -- Rollback to the specified Point.
   , plugRollbackBlock :: [Trace IO Text -> CardanoPoint -> IO (Either SyncNodeError ())]
   }

@@ -43,27 +43,29 @@ defDbSyncNodePlugin :: SqlBackend -> SyncNodePlugin
 defDbSyncNodePlugin backend =
   SyncNodePlugin
     { plugOnStartup = []
-    , plugInsertBlock = [insertDefaultBlock backend]
+    , plugInsertBlock = insertDefaultBlock backend
+    , plugInsertBlockDetails = []
     , plugRollbackBlock = [rollbackToSlot backend]
     }
 
 -- -------------------------------------------------------------------------------------------------
 
 insertDefaultBlock
-    :: SqlBackend -> Trace IO Text -> SyncEnv -> [BlockDetails]
-    -> IO (Either SyncNodeError ())
-insertDefaultBlock backend tracer env blockDetails =
-    DB.runDbIohkLogging backend tracer $
-      runExceptT (traverse_ insert blockDetails)
+    :: SqlBackend -> Trace IO Text -> SyncEnv -> [CardanoBlock]
+    -> ExceptT SyncNodeError IO [BlockDetails]
+insertDefaultBlock backend tracer env blocks =
+    mapExceptT (DB.runDbIohkLogging backend tracer) $
+      mapM insert blocks
   where
     insert
         :: (MonadBaseControl IO m, MonadIO m)
-        => BlockDetails -> ExceptT SyncNodeError (ReaderT SqlBackend m) ()
-    insert (BlockDetails cblk details) = do
+        => CardanoBlock -> ExceptT SyncNodeError (ReaderT SqlBackend m) BlockDetails
+    insert cblk = do
       -- Calculate the new ledger state to pass to the DB insert functions but do not yet
       -- update ledgerStateVar.
       let network = leNetwork (envLedger env)
-      lStateSnap <- liftIO $ applyBlock (envLedger env) cblk details
+      lStateSnap <- liftIO $ applyBlock (envLedger env) cblk
+      let details = lssSlotDetails lStateSnap
       handleLedgerEvents tracer (envLedger env) (lssEvents lStateSnap)
       case cblk of
         BlockByron blk ->
@@ -77,6 +79,7 @@ insertDefaultBlock backend tracer env blockDetails =
       -- Now we update it in ledgerStateVar and (possibly) store it to disk.
       liftIO $ saveLedgerStateMaybe (envLedger env)
                     lStateSnap (isSyncedWithinSeconds details 60)
+      pure $ BlockDetails cblk details
 
 handleLedgerEvents
     :: (MonadBaseControl IO m, MonadIO m)
