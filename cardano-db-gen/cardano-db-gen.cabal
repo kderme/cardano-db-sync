@@ -49,7 +49,7 @@ library
                       , cardano-crypto-wrapper
                       , cardano-db
                       , cardano-db-sync
-                      , cardano-ledger
+--                      , cardano-ledger
                       , cardano-ledger-shelley-ma
                       -- Only for some orphan tracing instances.
                       , cardano-node
