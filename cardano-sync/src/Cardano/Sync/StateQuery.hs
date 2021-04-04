@@ -8,7 +8,7 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module Cardano.Sync.StateQuery
-  ( getSlotDetails
+  ( querySlotDetails
   ) where
 
 import           Cardano.Slotting.Slot (SlotNo (..))
@@ -17,12 +17,11 @@ import           Cardano.Sync.Types
 
 import           Cardano.Prelude hiding (atomically)
 
-import           Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
+import           Data.Time.Clock (UTCTime, addUTCTime)
 
 import           Ouroboros.Consensus.BlockchainTime.WallClock.Types (RelativeTime (..),
                    SystemStart (..))
 import           Ouroboros.Consensus.Cardano.Node ()
-import qualified Ouroboros.Consensus.HardFork.History as History
 import           Ouroboros.Consensus.HardFork.History.Qry (Expr (..), Qry, qryFromExpr,
                    slotToEpoch')
 
@@ -45,11 +44,3 @@ querySlotDetails start absSlot = do
 
 relToUTCTime :: SystemStart -> RelativeTime -> UTCTime
 relToUTCTime (SystemStart start) (RelativeTime rel) = addUTCTime rel start
-
-getSlotDetails :: SystemStart -> History.Interpreter xs -> SlotNo -> IO SlotDetails
-getSlotDetails systemStart inter slot =
-    case History.interpretQuery inter (querySlotDetails systemStart slot) of
-      Left err -> throwIO err
-      Right sd -> do
-        time <- getCurrentTime
-        pure $ sd { sdCurrentTime = time }

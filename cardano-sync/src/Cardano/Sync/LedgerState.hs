@@ -60,6 +60,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Strict.Maybe as Strict
 import qualified Data.Text as Text
+import           Data.Time.Clock (getCurrentTime)
 
 import           Ouroboros.Consensus.Block (CodecConfig, WithOrigin (..), blockHash, blockIsEBB,
                    blockPrevHash, withOrigin)
@@ -67,7 +68,7 @@ import           Ouroboros.Consensus.Block.Abstract (ConvertRawHash (..))
 import           Ouroboros.Consensus.Cardano.Block (LedgerState (..))
 import           Ouroboros.Consensus.Cardano.CanHardFork ()
 import           Ouroboros.Consensus.Config (TopLevelConfig (..), configCodec, configLedger)
-import           Ouroboros.Consensus.HardFork.Abstract (hardForkSummary)
+import           Ouroboros.Consensus.HardFork.Abstract
 import qualified Ouroboros.Consensus.HardFork.Combinator as Consensus
 import           Ouroboros.Consensus.HardFork.Combinator.Basics (LedgerState (..))
 import           Ouroboros.Consensus.HardFork.Combinator.State (epochInfoLedger)
@@ -75,6 +76,7 @@ import qualified Ouroboros.Consensus.HardFork.History as History
 import qualified Ouroboros.Consensus.HeaderValidation as Consensus
 import           Ouroboros.Consensus.Ledger.Abstract (ledgerTipHash, ledgerTipPoint, ledgerTipSlot,
                    tickThenReapply)
+import           Ouroboros.Consensus.Ledger.Basics
 import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerCfg (..), ExtLedgerState (..))
 import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
 import qualified Ouroboros.Consensus.Node.ProtocolInfo as Consensus
@@ -116,6 +118,7 @@ data LedgerEnv = LedgerEnv
   , leSystemStart :: !SystemStart
   , leStateVar :: !(StrictTVar IO CardanoLedgerState)
   , leEventState :: !(StrictTVar IO LedgerEventState)
+  , leInterpreter :: !(StrictTVar IO (Maybe CardanoInterpreter))
   , leIndexCache :: !(StrictTVar IO IndexCache)
   }
 
@@ -165,6 +168,7 @@ mkLedgerEnv protocolInfo dir network systemStart slot deleteFiles = do
     st <- findLatestLedgerState protocolInfo dir deleteFiles
     svar <- newTVarIO st
     evar <- newTVarIO initLedgerEventState
+    interVar <- newTVarIO Nothing
     ivar <- newTVarIO $ IndexCache mempty mempty
     pure LedgerEnv
       { leProtocolInfo = protocolInfo
@@ -173,6 +177,7 @@ mkLedgerEnv protocolInfo dir network systemStart slot deleteFiles = do
       , leSystemStart = systemStart
       , leStateVar = svar
       , leEventState = evar
+      , leInterpreter = interVar
       , leIndexCache = ivar
       }
   where
@@ -200,9 +205,7 @@ applyBlock env blk = do
     -- is fine.
     oldState <- atomically $ readTVar (leStateVar env)
     let !newState = oldState { clsState = applyBlk (ExtLedgerCfg (topLevelConfig env)) blk (clsState oldState) }
-    let hfConfig = configLedger $ Consensus.pInfoConfig $ leProtocolInfo env
-    let inter = History.mkInterpreter $ hardForkSummary hfConfig (ledgerState $ clsState newState)
-    details <- getSlotDetails (leSystemStart env) inter (cardanoBlockSlotNo blk)
+    details <- getSlotDetails env (ledgerState $ clsState newState) (cardanoBlockSlotNo blk)
     atomically $ writeTVar (leStateVar env) newState
     oldEventState <- atomically $ readTVar (leEventState env)
     events <- atomically $ generateEvents env oldEventState  details newState
@@ -599,6 +602,31 @@ tickThenReapplyCheckHash cfg block lsb =
                   , " and block current hash is "
                   , renderByteArray (BSS.fromShort . Consensus.getOneEraHash $ blockHash block), "."
                   ]
+
+getSlotDetails :: LedgerEnv -> LedgerState CardanoBlock -> SlotNo -> IO SlotDetails
+getSlotDetails env st slot = do
+    minter <- atomically $ readTVar $ leInterpreter env
+    details <- case minter of
+      Just inter -> case queryWith inter of
+        Left _ -> queryNewInterpreter
+        Right sd -> return sd
+      Nothing -> queryNewInterpreter
+    time <- getCurrentTime
+    pure $ details { sdCurrentTime = time }
+  where
+    hfConfig = configLedger $ Consensus.pInfoConfig $ leProtocolInfo env
+
+    queryNewInterpreter :: IO SlotDetails
+    queryNewInterpreter =
+      let inter = History.mkInterpreter $ hardForkSummary hfConfig st
+      in case queryWith inter of
+        Left err -> throwIO err
+        Right sd -> do
+          atomically $ writeTVar (leInterpreter env) (Just inter)
+          return sd
+
+    queryWith inter =
+      History.interpretQuery inter (querySlotDetails (leSystemStart env) slot)
 
 totalAdaPots
     :: forall era. UsesValue era
