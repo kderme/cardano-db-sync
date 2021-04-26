@@ -25,7 +25,7 @@ import           Cardano.Sync.Error
 
 import           Control.Monad.Trans.Except (ExceptT)
 
-import           Ouroboros.Consensus.Cardano (Nonce (..), Protocol (..))
+import           Ouroboros.Consensus.Cardano (Nonce (..))
 import qualified Ouroboros.Consensus.Cardano as Consensus
 import           Ouroboros.Consensus.Config (TopLevelConfig (..))
 import           Ouroboros.Consensus.Ledger.Basics (LedgerConfig)
@@ -78,7 +78,7 @@ mkProtocolCardano :: GenesisConfig -> Protocol m CardanoBlock CardanoProtocol
 mkProtocolCardano ge =
   case ge of
     GenesisCardano dnc byronGenesis shelleyGenesis ->
-        Consensus.ProtocolCardano
+        CardanoBlockType
           Consensus.ProtocolParamsByron
             { Consensus.byronGenesis = byronGenesis
             , Consensus.byronPbftSignatureThreshold = Consensus.PBftSignatureThreshold <$> dncPBftSignatureThreshold dnc
