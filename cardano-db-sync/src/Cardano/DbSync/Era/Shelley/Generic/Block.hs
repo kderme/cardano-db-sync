@@ -23,6 +23,7 @@ import           Cardano.DbSync.Era.Shelley.Generic.Util
 
 import           Cardano.Ledger.Crypto (VRF)
 import           Cardano.Ledger.Era (Crypto)
+import qualified Cardano.Ledger.Era as Ledger
 
 import           Cardano.Prelude
 
@@ -141,7 +142,7 @@ blockProtoVersion = Shelley.bprotver . blockBody
 blockSize :: ShelleyBasedEra era => ShelleyBlock era -> Word64
 blockSize = fromIntegral . Shelley.bBodySize . Shelley.bbody . Consensus.shelleyBlockRaw
 
-blockTxs :: ShelleyBasedEra era => ShelleyBlock era -> [(Word64, Shelley.Tx era)]
+blockTxs :: (ShelleyBasedEra era , Ledger.TxSeq era ~ Shelley.TxSeq era) => ShelleyBlock era -> [(Word64, Shelley.Tx era)]
 blockTxs = zip [0 ..] . unTxSeq . Shelley.bbody . Consensus.shelleyBlockRaw
 
 blockVrfKeyView :: (ShelleyBasedEra era, VRF (Crypto era) ~ PraosVRF) => ShelleyBlock era -> Text

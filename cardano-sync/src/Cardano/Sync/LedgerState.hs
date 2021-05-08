@@ -582,14 +582,18 @@ getAdaPots st =
       LedgerStateShelley sts -> Just $ totalAdaPots sts
       LedgerStateAllegra sta -> Just $ totalAdaPots sta
       LedgerStateMary stm -> Just $ totalAdaPots stm
+      LedgerStateAlonzo sta -> Just $ totalAdaPots sta
 
 ledgerEpochNo :: LedgerEnv -> CardanoLedgerState -> EpochNo
 ledgerEpochNo env cls =
     case ledgerTipSlot (ledgerState (clsState cls)) of
       Origin -> 0 -- An empty chain is in epoch 0
-      NotOrigin slot -> runIdentity $ epochInfoEpoch epochInfo slot
+      NotOrigin slot ->
+        case runExcept $ epochInfoEpoch epochInfo slot of
+          Left err -> panic $ "ledgerEpochNo: " <> textShow err
+          Right en -> en
   where
-    epochInfo :: EpochInfo Identity
+    epochInfo :: EpochInfo (Except Consensus.PastHorizonException)
     epochInfo = epochInfoLedger (configLedger $ topLevelConfig env) (hardForkLedgerStatePerEra . ledgerState $ clsState cls)
 
 -- Like 'Consensus.tickThenReapply' but also checks that the previous hash from the block matches

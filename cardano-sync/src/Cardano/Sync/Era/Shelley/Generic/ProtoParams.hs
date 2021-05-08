@@ -1,4 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 module Cardano.Sync.Era.Shelley.Generic.ProtoParams
   ( ProtoParams (..)
@@ -8,13 +9,14 @@ module Cardano.Sync.Era.Shelley.Generic.ProtoParams
 import           Cardano.Prelude
 
 import           Cardano.Ledger.Coin (Coin (..))
+import qualified Cardano.Ledger.Alonzo as Alonzo
 
 import           Cardano.Slotting.Slot (EpochNo (..))
 
 import           Cardano.Sync.Types
 
-import           Ouroboros.Consensus.Cardano.Block (LedgerState (..), StandardAllegra, StandardMary,
-                   StandardShelley)
+import           Ouroboros.Consensus.Cardano.Block (LedgerState (..), StandardAllegra,
+                   StandardAlonzo, StandardCrypto, StandardMary, StandardShelley)
 
 import           Ouroboros.Consensus.Cardano (Nonce (..))
 import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerState (..))
@@ -53,23 +55,31 @@ epochProtoParams lstate =
       LedgerStateShelley sls -> Just $ shelleyProtoParams sls
       LedgerStateAllegra als -> Just $ allegraProtoParams als
       LedgerStateMary mls -> Just $ maryProtoParams mls
+      LedgerStateAlonzo als -> Just $ alonzoProtoParams als
 
 allegraProtoParams :: LedgerState (ShelleyBlock StandardAllegra) -> ProtoParams
 allegraProtoParams =
-  toProtoParams . Shelley.esPp . Shelley.nesEs . Consensus.shelleyLedgerState
+  fromShelleyParams . Shelley.esPp . Shelley.nesEs . Consensus.shelleyLedgerState
+
+alonzoProtoParams :: LedgerState (ShelleyBlock StandardAlonzo) -> ProtoParams
+alonzoProtoParams =
+  fromAlonzoParams . Shelley.esPp . Shelley.nesEs . Consensus.shelleyLedgerState
 
 maryProtoParams :: LedgerState (ShelleyBlock StandardMary) -> ProtoParams
 maryProtoParams =
-  toProtoParams . Shelley.esPp . Shelley.nesEs . Consensus.shelleyLedgerState
+  fromShelleyParams . Shelley.esPp . Shelley.nesEs . Consensus.shelleyLedgerState
 
 shelleyProtoParams :: LedgerState (ShelleyBlock StandardShelley) -> ProtoParams
 shelleyProtoParams =
-  toProtoParams . Shelley.esPp . Shelley.nesEs . Consensus.shelleyLedgerState
+  fromShelleyParams . Shelley.esPp . Shelley.nesEs . Consensus.shelleyLedgerState
 
 -- -------------------------------------------------------------------------------------------------
 
-toProtoParams :: Shelley.PParams' Identity era -> ProtoParams
-toProtoParams params =
+fromAlonzoParams :: Alonzo.PParams (Alonzo.AlonzoEra StandardCrypto) -> ProtoParams
+fromAlonzoParams = panic "Cardano.Sync.Era.Shelley.Generic.ProtoParams.fromAlonzoParams"
+
+fromShelleyParams :: Shelley.PParams' Identity era -> ProtoParams
+fromShelleyParams params =
   ProtoParams
     { ppMinfeeA = Shelley._minfeeA params
     , ppMinfeeB = Shelley._minfeeB params

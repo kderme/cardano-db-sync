@@ -31,7 +31,7 @@ import           Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 
 import           Ouroboros.Consensus.BlockchainTime.WallClock.Types (RelativeTime (..),
                    SystemStart (..))
-import           Ouroboros.Consensus.Cardano.Block (CardanoEras, Query (..))
+import           Ouroboros.Consensus.Cardano.Block (CardanoEras)
 import           Ouroboros.Consensus.Cardano.Node ()
 import           Ouroboros.Consensus.HardFork.Combinator.Basics (HardForkBlock (..))
 import           Ouroboros.Consensus.HardFork.Combinator.Ledger.Query

@@ -74,8 +74,10 @@ library
                       , cardano-crypto-class
                       , cardano-crypto-wrapper
                       , cardano-db
+                      , cardano-ledger-alonzo
                       , cardano-ledger-byron
                       , cardano-ledger-core
+                      , cardano-ledger-shelley-ma
                       -- Only for some orphan tracing instances.
                       , cardano-node
                       , cardano-prelude

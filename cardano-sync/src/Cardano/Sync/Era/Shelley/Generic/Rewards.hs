@@ -50,6 +50,7 @@ epochRewards nw epoch lstate =
     LedgerStateShelley sls -> genericRewards nw epoch sls
     LedgerStateAllegra als -> genericRewards nw epoch als
     LedgerStateMary mls -> genericRewards nw epoch mls
+    LedgerStateAlonzo als -> genericRewards nw epoch als
 
 rewardsPoolHashKeys :: Rewards -> Set PoolKeyHash
 rewardsPoolHashKeys rwds =
