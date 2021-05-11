@@ -55,6 +55,7 @@ import           Test.Tasty.QuickCheck
 
 import           Cardano.DbSync (runDbSyncNode)
 import           Cardano.DbSync.Plugin.Extended
+import           Cardano.Sync hiding (Block)
 import           Cardano.Sync.Config.Cardano
 
 import qualified Cardano.Mock.Chain as Chain
@@ -174,7 +175,7 @@ prop_1 cfg = noShrinking $ withMaxSuccess 1
   $ forAllCommands smc Nothing
   $ \cmds -> monadicIO $ do
     mockServer <- liftIO $ forkServerThread @(Block c) cfg (NetworkMagic 42) $ unSocketPath (enpSocketPath params)
-    node <- liftIO $ async $ runDbSyncNode extendedDbSyncNodePlugin params
+    node <- liftIO $ async $ runDbSyncNode nullMetricSetters extendedDbSyncNodePlugin params
     liftIO $ link node
     let sm = mkSM @c cfg mockServer
     (hist, _model, res) <- runCommands sm cmds
@@ -186,11 +187,12 @@ prop_1 cfg = noShrinking $ withMaxSuccess 1
 
 params :: SyncNodeParams
 params = SyncNodeParams
-  { enpConfigFile = ConfigFile "test/testfiles/config.json"
+  { enpConfigFile = ConfigFile "test/testfiles/config.yaml"
   , enpSocketPath = SocketPath "testfiles/.socket"
   , enpLedgerStateDir = LedgerStateDir "testfiles/ledger-states"
   , enpMigrationDir = MigrationDir "../schema"
   , enpMaybeRollback = Nothing
+  , enpPGPassFile = Just $ PGPassFile "/home/kostas/programming/cardano-db-sync/config/pgpass-mainnet"
   }
 
 instance ToExpr (ExtLedgerState StandardCrypto) where
