@@ -28,7 +28,6 @@ module Cardano.SMASH.Types
     , PoolTicker (..)
     , PoolHomepage (..)
     , PoolOfflineMetadata (..)
-    , createPoolOfflineMetadata
     , examplePoolOfflineMetadata
     -- * Configuration
     , HealthStatus (..)
@@ -239,15 +238,6 @@ data PoolOfflineMetadata = PoolOfflineMetadata
     , pomTicker :: !PoolTicker
     , pomHomepage :: !PoolHomepage
     } deriving (Eq, Show, Ord, Generic)
-
--- | Smart constructor, just adding one more layer of indirection.
-createPoolOfflineMetadata
-    :: PoolName
-    -> PoolDescription
-    -> PoolTicker
-    -> PoolHomepage
-    -> PoolOfflineMetadata
-createPoolOfflineMetadata = PoolOfflineMetadata
 
 -- Required instances
 instance FromJSON PoolOfflineMetadata where
