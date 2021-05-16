@@ -5,6 +5,7 @@
 
 module Cardano.DbSync.Era
   ( insertValidateGenesisDist
+  , runOfflineFetchThread
   ) where
 
 import           Cardano.Prelude
@@ -16,6 +17,7 @@ import           Cardano.Sync.Error
 
 import qualified Cardano.DbSync.Era.Byron.Genesis as Byron
 import qualified Cardano.DbSync.Era.Shelley.Genesis as Shelley
+import           Cardano.DbSync.Era.Shelley.Offline (runOfflineFetchThread)
 
 import           Database.Persist.Sql (SqlBackend)
 

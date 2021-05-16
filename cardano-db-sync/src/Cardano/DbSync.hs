@@ -32,7 +32,7 @@ import           Cardano.BM.Trace (Trace)
 
 import qualified Cardano.Db as DB
 
-import           Cardano.DbSync.Era (insertValidateGenesisDist)
+import           Cardano.DbSync.Era (insertValidateGenesisDist, runOfflineFetchThread)
 import           Cardano.DbSync.Plugin.Default (defDbSyncNodePlugin)
 import           Cardano.DbSync.Rollback (unsafeRollback)
 import           Cardano.Sync.Database (runDbThread)
@@ -71,8 +71,10 @@ runDbSyncNode metricsSetters mkPlugin params = do
         whenJust (enpMaybeRollback params) $ \ slotNo ->
           void $ unsafeRollback trce slotNo
 
-        runSyncNode (mkSyncDataLayer trce backend) metricsSetters trce (mkPlugin backend)
-            params (insertValidateGenesisDist backend) runDbThread
+        race_
+          (runSyncNode (mkSyncDataLayer trce backend) metricsSetters trce (mkPlugin backend)
+              params (insertValidateGenesisDist backend) runDbThread)
+          (runOfflineFetchThread trce backend)
   where
     -- This is only necessary because `cardano-db` and `cardano-sync` both define
     -- this newtype, but the later does not depend on the former.
