@@ -51,7 +51,7 @@ import           Data.Aeson.Types (Parser, typeMismatch)
 import           Ouroboros.Consensus.Byron.Ledger (ByronBlock (..))
 import qualified Ouroboros.Consensus.Cardano.Block as Cardano
 import qualified Ouroboros.Consensus.Cardano.CanHardFork as Shelley
-import           Ouroboros.Consensus.Cardano.Node (ProtocolParamsTransition)
+import           Ouroboros.Consensus.Cardano.Node (ProtocolTransitionParamsShelleyBased)
 import qualified Ouroboros.Consensus.HardFork.Combinator.Basics as Cardano
 import           Ouroboros.Consensus.Shelley.Eras (StandardShelley)
 import qualified Ouroboros.Consensus.Shelley.Ledger.Block as Shelley
@@ -78,13 +78,13 @@ type CardanoProtocol =
             ]
 
 type ByronToShelley =
-        ProtocolParamsTransition ByronBlock (Shelley.ShelleyBlock Cardano.StandardShelley)
+        ProtocolTransitionParamsShelleyBased ByronBlock
 
 type ShelleyToAllegra =
-        ProtocolParamsTransition (Shelley.ShelleyBlock Cardano.StandardShelley) (Shelley.ShelleyBlock Cardano.StandardAllegra)
+        ProtocolTransitionParamsShelleyBased (Shelley.ShelleyBlock Cardano.StandardShelley)
 
 type AllegraToMary =
-        ProtocolParamsTransition (Shelley.ShelleyBlock Cardano.StandardAllegra) (Shelley.ShelleyBlock Cardano.StandardMary)
+        ProtocolTransitionParamsShelleyBased (Shelley.ShelleyBlock Cardano.StandardAllegra)
 
 newtype ConfigFile = ConfigFile
   { unConfigFile :: FilePath

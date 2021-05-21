@@ -582,6 +582,7 @@ getAdaPots st =
       LedgerStateShelley sts -> Just $ totalAdaPots sts
       LedgerStateAllegra sta -> Just $ totalAdaPots sta
       LedgerStateMary stm -> Just $ totalAdaPots stm
+      LedgerStateAlonzo sta -> Just $ totalAdaPots sta
 
 ledgerEpochNo :: LedgerEnv -> CardanoLedgerState -> EpochNo
 ledgerEpochNo env cls =

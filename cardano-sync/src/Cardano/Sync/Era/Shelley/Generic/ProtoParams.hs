@@ -1,4 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 module Cardano.Sync.Era.Shelley.Generic.ProtoParams
   ( ProtoParams (..)
@@ -13,8 +14,8 @@ import           Cardano.Slotting.Slot (EpochNo (..))
 
 import           Cardano.Sync.Types
 
-import           Ouroboros.Consensus.Cardano.Block (LedgerState (..), StandardAllegra, StandardMary,
-                   StandardShelley)
+import           Ouroboros.Consensus.Cardano.Block (LedgerState (..), StandardAllegra,
+                   StandardAlonzo, StandardMary, StandardShelley)
 
 import           Ouroboros.Consensus.Cardano (Nonce (..))
 import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerState (..))
@@ -53,10 +54,16 @@ epochProtoParams lstate =
       LedgerStateShelley sls -> Just $ shelleyProtoParams sls
       LedgerStateAllegra als -> Just $ allegraProtoParams als
       LedgerStateMary mls -> Just $ maryProtoParams mls
+      LedgerStateAlonzo als -> Just $ alonzoProtoParams als
 
 allegraProtoParams :: LedgerState (ShelleyBlock StandardAllegra) -> ProtoParams
 allegraProtoParams =
   toProtoParams . Shelley.esPp . Shelley.nesEs . Consensus.shelleyLedgerState
+
+alonzoProtoParams :: LedgerState (ShelleyBlock StandardAlonzo) -> ProtoParams
+alonzoProtoParams =
+  panic "Cardano.Sync.Era.Shelley.Generic.ProtoParams.alonzoProtoParams"
+
 
 maryProtoParams :: LedgerState (ShelleyBlock StandardMary) -> ProtoParams
 maryProtoParams =

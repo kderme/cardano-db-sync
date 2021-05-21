@@ -47,6 +47,7 @@ epochStakeDist network epoch els =
     LedgerStateShelley sls -> Just $ genericStakeDist network epoch sls
     LedgerStateAllegra als -> Just $ genericStakeDist network epoch als
     LedgerStateMary mls -> Just $ genericStakeDist network epoch mls
+    LedgerStateAlonzo als -> Just $ genericStakeDist network epoch als
 
 -- Use Set because they guarantee unique elements.
 stakeDistPoolHashKeys :: StakeDist -> Set PoolKeyHash

@@ -70,7 +70,6 @@ mkTopLevelConfig = Consensus.pInfoConfig . mkProtocolInfoCardano
 -- | The vast majority of the following struct fields are *COMPLETELY IRRELEVANT* to the
 -- operation of db-sync, but I have no idea at all what happens of any of these are
 -- wrong. This really needs to be a done a different way.
--- mkProtocolCardano :: GenesisConfig -> Protocol m CardanoBlock CardanoProtocol
 mkProtocolInfoCardano :: GenesisConfig -> ProtocolInfo IO CardanoBlock
 mkProtocolInfoCardano ge =
   case ge of
