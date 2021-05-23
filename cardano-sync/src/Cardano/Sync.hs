@@ -163,6 +163,7 @@ runSyncNode dataLayer metricsSetters trce plugin enp insertValidateGenesisDist r
         ShelleyCodecConfig
         ShelleyCodecConfig -- Allegra
         ShelleyCodecConfig -- Mary
+        ShelleyCodecConfig -- Alonzo
 
 -- -------------------------------------------------------------------------------------------------
 
@@ -217,14 +218,9 @@ runSyncNodeNodeClient metricsSetters env iomgr trce plugin runDBThreadFunction c
     handshakeTracer = toLogObject $ appendName "Handshake" trce
 
 dbSyncProtocols
-    :: Trace IO Text
-    -> SyncEnv
-    -> MetricSetters
-    -> SyncNodePlugin
+    :: Trace IO Text -> SyncEnv -> MetricSetters -> SyncNodePlugin
     -> StateQueryTMVar CardanoBlock (Interpreter (CardanoEras StandardCrypto))
-    -> RunDBThreadFunction
-    -> Network.NodeToClientVersion
-    -> ClientCodecs CardanoBlock IO
+    -> RunDBThreadFunction -> Network.NodeToClientVersion -> ClientCodecs CardanoBlock IO
     -> ConnectionId LocalAddress
     -> NodeToClientProtocols 'InitiatorMode BSL.ByteString IO () Void
 dbSyncProtocols trce env metricsSetters plugin queryVar runDBThreadFunction version codecs _connectionId =
