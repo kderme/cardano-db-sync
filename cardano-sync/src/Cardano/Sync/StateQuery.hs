@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -34,8 +35,8 @@ import           Ouroboros.Consensus.BlockchainTime.WallClock.Types (RelativeTim
 import           Ouroboros.Consensus.Cardano.Block (CardanoEras)
 import           Ouroboros.Consensus.Cardano.Node ()
 import           Ouroboros.Consensus.HardFork.Combinator.Basics (HardForkBlock (..))
-import           Ouroboros.Consensus.HardFork.Combinator.Ledger.Query
-                   (QueryHardFork (GetInterpreter))
+import           Ouroboros.Consensus.HardFork.Combinator
+                   (BlockQuery (..), QueryHardFork (..))
 import           Ouroboros.Consensus.HardFork.History.Qry (Expr (..), Interpreter,
                    PastHorizonException, Qry, interpretQuery, qryFromExpr, slotToEpoch')
 import           Ouroboros.Consensus.Shelley.Protocol (StandardCrypto)
@@ -44,7 +45,6 @@ import           Ouroboros.Network.Block (Point (..))
 import           Ouroboros.Network.Protocol.LocalStateQuery.Client (ClientStAcquired (..),
                    ClientStAcquiring (..), ClientStIdle (..), ClientStQuerying (..),
                    LocalStateQueryClient (..))
-import qualified Ouroboros.Network.Protocol.LocalStateQuery.Client as StateQuery
 import           Ouroboros.Network.Protocol.LocalStateQuery.Type (AcquireFailure)
 
 import           System.IO.Unsafe (unsafePerformIO)
@@ -52,7 +52,7 @@ import           System.IO.Unsafe (unsafePerformIO)
 newtype StateQueryTMVar blk result = StateQueryTMVar
   { unStateQueryTMVar ::
       StrictTMVar IO
-        ( Query blk result
+        ( BlockQuery blk result
         , StrictTMVar IO (Either AcquireFailure result)
         )
   }
@@ -114,13 +114,13 @@ getHistoryInterpreter tracer queryVar = do
 -- This is called during the ChainSync setup and loops forever. Queries can be posted to
 -- it and responses retrieved via a TVar.
 localStateQueryHandler
-    :: forall block result a
-    . StateQueryTMVar block result
-    -> LocalStateQueryClient block (Point block) (Query block) IO a
+    :: forall blk result a
+    . StateQueryTMVar blk result
+    -> LocalStateQueryClient blk (Point blk) (BlockQuery blk) IO a
 localStateQueryHandler (StateQueryTMVar reqVar) =
     LocalStateQueryClient idleState
   where
-    idleState :: IO (StateQuery.ClientStIdle block (Point block) (Query block) IO a)
+    idleState :: IO (ClientStIdle blk (Point blk) (BlockQuery blk) IO a)
     idleState = do
       (query, respVar) <- atomically $ takeTMVar reqVar
       pure .
