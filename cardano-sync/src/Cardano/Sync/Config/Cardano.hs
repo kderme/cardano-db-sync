@@ -103,7 +103,7 @@ mkProtocolInfoCardano ge =
           (dncByronToShelley dnc)
           (dncShelleyToAllegra dnc)
           (dncAllegraToMary dnc)
-          (dncMaryToAlonzo dnc)
+          (error "Cardano.Sync.Config.Cardano.mkProtocolInfoCardano") -- (dncMaryToAlonzo dnc)
 
 
 shelleyPraosNonce :: ShelleyConfig -> Nonce
