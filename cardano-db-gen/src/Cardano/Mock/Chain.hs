@@ -65,6 +65,17 @@ extendChain chainDB blk = case cchain chainDB of
       Left err -> error $ show err
       Right st -> chainDB {cchain = Just $ chain :> (blk, st)}
 
+findFirstPointCPS :: HasHeader block
+               => [Point block]
+               -> ChainProducerState block
+               -> Maybe (Point block)
+findFirstPointCPS ps = findFirstPoint ps . getChainUnsafe . chainDB
+
+getChainUnsafe :: ChainDB blk -> Chain blk
+getChainUnsafe chainDB = case cchain chainDB of
+  Nothing -> error "getChainUnsafe to an initiated chain"
+  Just chain -> chain
+
 getTipState :: Chain' blk st -> st
 getTipState (Genesis st) = st
 getTipState (_ :> (_, st)) = st
@@ -147,6 +158,23 @@ followerInstruction fid cps@(ChainProducerState c cflrst cfid) =
 lookupFollower :: ChainProducerState block -> FollowerId -> FollowerState block
 lookupFollower (ChainProducerState _ cflrst _) fid = cflrst Map.! fid
 
+-- | Change the intersection point of a follower. This also puts it into
+-- the 'FollowerBackTo' state.
+--
+updateFollower :: FollowerId
+               -> Point block    -- ^ new follower intersection point
+               -> ChainProducerState block
+               -> ChainProducerState block
+updateFollower fid point (ChainProducerState c cflrst cnfid) =
+    ChainProducerState c (Map.adjust update fid cflrst) cnfid
+  where
+    update flrst = flrst { followerPoint = point, followerNext  = FollowerBackTo }
+
+{-}
+updateFollower :: ChainProducerState block -> FollowerId -> FollowerState block -> ChainProducerState block
+updateFollower cps fid flst = cps {chainFollowers = Map.insert fid flst (chainFollowers cps)}
+-}
+
 pointOnMChain :: HasHeader block => Point block -> Maybe (Chain block) -> Bool
 pointOnMChain _ Nothing = False
 pointOnMChain point (Just c) = pointOnChain point c
@@ -158,6 +186,16 @@ pointOnChain p@(BlockPoint pslot phash) (c :> (b, _))
   | pslot >  blockSlot b = False
   | phash == blockHash b = True
   | otherwise            = pointOnChain p c
+
+findFirstPoint
+  :: HasHeader block
+  => [Point block]
+  -> Chain block
+  -> Maybe (Point block)
+findFirstPoint [] _     = Nothing
+findFirstPoint (p:ps) c
+  | pointOnChain p c    = Just p
+  | otherwise           = findFirstPoint ps c
 
 headPoint :: HasHeader block => Chain block -> Point block
 headPoint (Genesis _) = genesisPoint

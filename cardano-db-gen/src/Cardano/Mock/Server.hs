@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -73,9 +74,10 @@ import           Ouroboros.Network.Protocol.Handshake.Version (combineVersions,
                    simpleSingletonVersions)
 import           Ouroboros.Network.Snocket (LocalAddress, LocalSnocket, LocalSocket (..))
 import qualified Ouroboros.Network.Snocket as Snocket
+import           Ouroboros.Network.Socket (debuggingNetworkServerTracers)
 import           Ouroboros.Network.Util.ShowProxy (ShowProxy, Proxy(..))
 
-import           Ouroboros.Network.Protocol.ChainSync.Server (ChainSyncServer, ServerStNext(SendMsgRollForward, SendMsgRollBackward),  ServerStIdle (..), ChainSyncServer (..), chainSyncServerPeer)
+import           Ouroboros.Network.Protocol.ChainSync.Server (ChainSyncServer, ServerStIntersect (..), ServerStNext(SendMsgRollForward, SendMsgRollBackward),  ServerStIdle (..), ChainSyncServer (..), chainSyncServerPeer)
 import           Ouroboros.Network.Protocol.LocalStateQuery.Type (ShowQuery)
 
 
@@ -83,6 +85,9 @@ data ServerHandle m blk = ServerHandle
   { chainProducerState :: StrictTVar m (ChainProducerState blk)
   , threadHandle :: Async ()
   }
+
+instance Eq (ServerHandle m blk) where
+  sh1 == sh2 = threadHandle sh1 == threadHandle sh2
 
 addGenesis :: MonadSTM m => ServerHandle m blk -> State blk -> STM m ()
 addGenesis handle st =
@@ -128,6 +133,7 @@ forkServerThread
     -> FilePath
     -> IO (ServerHandle IO blk)
 forkServerThread config networkMagic path = do
+    putStrLn $ "+++++++++++++++++++++++++++++++++++++++++ starting Server: " ++ show path
     chainSt <- newTVarIO $ initChainProducerState config
     thread <- async $ runLocalServer networkMagic path chainSt
     return $ ServerHandle chainSt thread
@@ -155,7 +161,7 @@ runLocalServer networkMagic localDomainSock chainProducerState =
                 networkState <- NodeToClient.newNetworkMutableState
                 _ <- NodeToClient.withServer
                        localSnocket
-                       NodeToClient.nullNetworkServerTracers -- TODO: some tracing might be useful.
+                       debuggingNetworkServerTracers -- TODO: some tracing might be useful.
                        networkState
                        localSocket
                        (versions chainProducerState)
@@ -234,7 +240,7 @@ chainSyncServer state codec blockVersion =
     idle r =
       ServerStIdle
         { recvMsgRequestNext = handleRequestNext r
-        , recvMsgFindIntersect =  error "chainSyncServer: Intersections not supported!"
+        , recvMsgFindIntersect = handleFindIntersect r
         , recvMsgDoneClient = pure ()
         }
 
@@ -251,6 +257,30 @@ chainSyncServer state codec blockVersion =
         Nothing     -> pure (Right (sendNext r <$> readChainUpdate r))
                        -- Follower is at the head, have to block and wait for
                        -- the producer's state to change.
+
+    handleFindIntersect :: FollowerId -> [Point blk] -> m (ServerStIntersect (Serialised blk) (Point blk) (Tip blk) m ())
+    handleFindIntersect r points = do
+      -- TODO: guard number of points
+      -- Find the first point that is on our chain
+      changed <- improveReadPoint r points
+      case changed of
+        (Just pt, tip) -> return $ SendMsgIntersectFound     pt tip (idle' r)
+        (Nothing, tip) -> return $ SendMsgIntersectNotFound     tip (idle' r)
+
+    improveReadPoint :: FollowerId
+                     -> [Point blk]
+                     -> m (Maybe (Point blk), Tip blk)
+    improveReadPoint rid points =
+      atomically $ do
+        cps <- readTVar state
+        case findFirstPointCPS points cps of
+          Nothing     -> let chain = chainDB cps
+                         in return (Nothing, headTip chain)
+          Just ipoint -> do
+            let !cps' = updateFollower rid ipoint cps
+            writeTVar state cps'
+            let chain = chainDB cps'
+            return (Just ipoint, headTip chain)
 
     sendNext :: FollowerId
              -> (Tip blk, ChainUpdate blk blk)
