@@ -75,6 +75,7 @@ import           Ouroboros.Consensus.Byron.Node ()
 import           Ouroboros.Consensus.Cardano.Block (CardanoEras, CodecConfig (..))
 import           Ouroboros.Consensus.Cardano.Node ()
 import           Ouroboros.Consensus.HardFork.History.Qry (Interpreter)
+import           Ouroboros.Consensus.Ledger.Query (Query (..))
 import           Ouroboros.Consensus.Network.NodeToClient (ClientCodecs, cChainSyncCodec,
                    cStateQueryCodec, cTxSubmissionCodec)
 import           Ouroboros.Consensus.Node.ErrorPolicy (consensusErrorPolicy)
