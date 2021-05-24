@@ -120,6 +120,29 @@ function dump_schema {
 	pg_dump -s "${databasename}"
 }
 
+function create_snapshot {
+	tgz_file=$1.tgz
+	dbfile=$1.sql
+	ledger_file=$2
+	tmp_dir=$(mktemp -d -t ci-XXXXXXXXXX)
+	echo $tmp_dir
+	pg_dump "${databasename}" > "$tmp_dir/$1.sql"
+	cp $ledger_file $tmp_dir/$(basename $ledger_file)
+	tar zcvf $tgz_file -C $tmp_dir $dbfile $(basename $ledger_file)
+	rm -r $tmp_dir
+	echo "Created $tgz_file"
+}
+
+function restore_snapshot {
+	tmp_dir=$(mktemp -d -t ci-XXXXXXXXXX)
+	tar -zxvf $1 --directory $tmp_dir
+	db_file=$(find $tmp_dir/ -iname "*.sql")
+	psql -d "${databasename}" -f $db_file
+	state_file=$(find $tmp_dir/ -iname "*.lstate")
+	mv $state_file $2/$(basename $state_file)
+	rm -r $tmp_dir
+}
+
 function usage_exit {
 	echo
 	echo "Usage:"
@@ -132,6 +155,8 @@ function usage_exit {
 	echo "    $progname --create-migration  - Create a migration (if one is needed)."
 	echo "    $progname --run-migrations    - Run all migrations applying as needed."
 	echo "    $progname --dump-schema       - Dump the schema of the database."
+	echo "    $progname --dump-snapshot output_dir ledger_file      - Dump the db and the ledger state to an output file."
+	echo "    $progname --restore-snapshot snapshot ledger_file_dir - Restore a db-sync snapshot."
 	echo
 	exit 0
 }
@@ -196,6 +221,18 @@ case "${1:-""}" in
 		check_pgpass_file
 		check_db_exists
 		dump_schema
+		;;
+	--create-snapshot)
+		check_pgpass_file
+		check_db_exists
+		create_snapshot $2 $3
+		;;
+	--restore-snapshot)
+		check_pgpass_file
+		check_for_psql
+		check_psql_superuser
+		create_db
+		restore_snapshot $2 $3
 		;;
 	*)
 		usage_exit
