@@ -250,7 +250,7 @@ insertTxOut tracer txId (Generic.TxOut index addr addrRaw value maMap dataHash) 
                   { DB.txOutTxId = txId
                   , DB.txOutIndex = index
                   , DB.txOutAddress = Generic.renderAddress addr
-                  , DB.txOutAddressRaw = addrRaw
+                  , DB.txOutAddressRaw = unSerialisedAddress addrRaw
                   , DB.txOutAddressHasScript = hasScript
                   , DB.txOutPaymentCred = Generic.maybePaymentCred addr
                   , DB.txOutStakeAddressId = mSaId

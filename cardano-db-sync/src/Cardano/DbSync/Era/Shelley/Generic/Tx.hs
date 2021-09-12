@@ -16,6 +16,7 @@ module Cardano.DbSync.Era.Shelley.Generic.Tx
   , TxWithdrawal (..)
   , TxScript (..)
   , TxDatum (..)
+  , SerialisedAddress (..)
   , fromShelleyTx
   , fromAllegraTx
   , fromMaryTx
@@ -121,7 +122,7 @@ data TxIn = TxIn
 data TxOut = TxOut
   { txOutIndex :: !Word16
   , txOutAddress :: !(Ledger.Addr StandardCrypto)
-  , txOutAddressRaw :: !ByteString
+  , txOutAddressRaw :: !SerialisedAddress
   , txOutAdaValue :: !Coin
   , txOutMaValue :: !(Map (PolicyID StandardCrypto) (Map AssetName Integer))
   , txOutDataHash :: !(Maybe ByteString)
@@ -145,6 +146,10 @@ data TxScript = TxScript
 data TxDatum = TxDatum
   { txDatumHash :: !ByteString
   , txDatumValue :: !ByteString -- we turn this into json later.
+  }
+
+newtype SerialisedAddress = SerialisedAddress
+  { unSerialisedAddress :: ByteString
   }
 
 fromAllegraTx :: (Word64, Shelley.Tx StandardAllegra) -> Tx
@@ -180,7 +185,7 @@ fromAllegraTx (blkIndex, tx) =
       TxOut
         { txOutIndex = index
         , txOutAddress = coerceAddress addr
-        , txOutAddressRaw = BSS.fromShort bs
+        , txOutAddressRaw = SerialisedAddress $ BSS.fromShort bs
         , txOutAdaValue = ada
         , txOutMaValue = mempty -- Allegra does not support Multi-Assets
         , txOutDataHash = mempty -- Allegra does not support scripts
@@ -256,7 +261,7 @@ fromShelleyTx (blkIndex, tx) =
       TxOut
         { txOutIndex = index
         , txOutAddress = coerceAddress addr
-        , txOutAddressRaw = BSS.fromShort bs
+        , txOutAddressRaw = SerialisedAddress $ BSS.fromShort bs
         , txOutAdaValue = ada
         , txOutMaValue = mempty -- Shelley does not support Multi-Assets
         , txOutDataHash = mempty -- Shelley does not support scripts
@@ -302,7 +307,7 @@ fromMaryTx (blkIndex, tx) =
       TxOut
         { txOutIndex = index
         , txOutAddress = coerceAddress addr
-        , txOutAddressRaw = BSS.fromShort bs
+        , txOutAddressRaw = SerialisedAddress $ BSS.fromShort bs
         , txOutAdaValue = Coin ada
         , txOutMaValue = coerceMultiAsset maMap
         , txOutDataHash = mempty -- Mary does not support scripts
@@ -375,7 +380,7 @@ fromAlonzoTx pp (blkIndex, tx) =
       TxOut
         { txOutIndex = index
         , txOutAddress = coerceAddress addr
-        , txOutAddressRaw = BSS.fromShort caddr
+        , txOutAddressRaw = SerialisedAddress $ BSS.fromShort caddr
         , txOutAdaValue = Coin ada
         , txOutMaValue = coerceMultiAsset maMap
         , txOutDataHash = getDataHash <$> strictMaybeToMaybe mDataHash
